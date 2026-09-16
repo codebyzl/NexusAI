@@ -14,8 +14,8 @@
 | ID | 任务 | 关键知识点 | 状态 |
 |---|---|---|---|
 | FND-01 | Maven 父工程、Wrapper、Common 空模块与依赖隔离 | 聚合、继承、dependencyManagement、依赖传递 | DONE |
-| FND-02 | 创建最小可运行 AuthService | Starter、自动配置、组件扫描、可执行 JAR、Actuator | DOING |
-| FND-03 | Docker Compose 启动 MySQL | 容器、网络、Volume、健康检查、环境变量 | TODO |
+| FND-02 | 创建最小可运行 AuthService | Starter、自动配置、组件扫描、可执行 JAR、Actuator | DONE |
+| FND-03 | Docker Compose 启动 MySQL | 容器、网络、Volume、健康检查、环境变量 | DOING |
 | FND-04 | AuthService 接入 Flyway | 数据库迁移、基线、不可变迁移、回滚思路 | TODO |
 | FND-05 | Testcontainers 数据库测试基线 | 测试金字塔、真实数据库集成测试、容器生命周期 | TODO |
 | FND-06 | 分环境配置与密钥约束 | Profile、配置优先级、环境变量、Secret 管理 | TODO |
@@ -191,4 +191,4 @@
 
 ## 当前任务
 
-下一任务为 `FND-02：创建最小可运行 AuthService`。其目的不是提前实现登录，而是验证可执行 Spring Boot 服务与纯 Java Library 的模块边界。通过后，按 `FND-03 → FND-04 → FND-05` 建立数据库和测试基线，再进入第一个业务闭环 `ACC-01`。
+当前任务为 `FND-03：Docker Compose 启动 MySQL`。`FND-02` 已完成构建、测试、依赖隔离、可执行 JAR 和 Actuator 运行验收。接下来按 `FND-03 → FND-04 → FND-05` 建立数据库、迁移和测试基线，再进入第一个业务闭环 `ACC-01`。
