@@ -2,8 +2,22 @@ spring:
   application:
     name: nexus-auth-service
 
+  datasource:
+    url: "jdbc:mysql://127.0.0.1:${MYSQL_PORT:3307}/${MYSQL_DATABASE:nexusai}?serverTimezone=UTC"
+    username: "${MYSQL_USER:nexusai}"
+    password: "${MYSQL_PASSWORD}"
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    validate-on-migrate: true
+    clean-disabled: true
+    baseline-on-migrate: false
+    out-of-order: false
+
 server:
   port: 8081
+
 
 management:
   endpoints:

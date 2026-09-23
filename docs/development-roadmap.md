@@ -15,9 +15,9 @@
 |---|---|---|---|
 | FND-01 | Maven 父工程、Wrapper、Common 空模块与依赖隔离 | 聚合、继承、dependencyManagement、依赖传递 | DONE |
 | FND-02 | 创建最小可运行 AuthService | Starter、自动配置、组件扫描、可执行 JAR、Actuator | DONE |
-| FND-03 | Docker Compose 启动 MySQL | 容器、网络、Volume、健康检查、环境变量 | DOING |
-| FND-04 | AuthService 接入 Flyway | 数据库迁移、基线、不可变迁移、回滚思路 | TODO |
-| FND-05 | Testcontainers 数据库测试基线 | 测试金字塔、真实数据库集成测试、容器生命周期 | TODO |
+| FND-03 | Docker Compose 启动 MySQL | 容器、网络、Volume、健康检查、环境变量 | DONE |
+| FND-04 | AuthService 接入 Flyway | 数据库迁移、基线、不可变迁移、回滚思路 | DONE |
+| FND-05 | Testcontainers 数据库测试基线 | 测试金字塔、真实数据库集成测试、容器生命周期 | DONE |
 | FND-06 | 分环境配置与密钥约束 | Profile、配置优先级、环境变量、Secret 管理 | TODO |
 | FND-07 | 统一日志、Trace ID 和错误响应 | Filter、MDC、异常边界、错误码 | TODO |
 
@@ -25,8 +25,8 @@
 
 | ID | 任务 | 关键知识点 | 状态 |
 |---|---|---|---|
-| ACC-01 | 设计并迁移 account 表 | 主键、唯一索引、时间、状态、逻辑删除取舍 | TODO |
-| ACC-02 | 实现 Account 持久化适配器 | 领域对象与持久化对象、Repository、MyBatis/JPA 取舍 | TODO |
+| ACC-01 | 设计并迁移 account 表 | 主键、唯一索引、时间、状态、逻辑删除取舍 | DONE |
+| ACC-02 | 实现 Account 持久化适配器 | 领域对象与持久化对象、Repository、MyBatis/JPA 取舍 | DOING |
 | ACC-03 | 实现注册用例 | 应用服务、事务边界、DTO 校验、错误语义 | TODO |
 | ACC-04 | 使用安全密码哈希 | bcrypt/Argon2、盐、成本参数、密码升级 | TODO |
 | ACC-05 | 注册接口与集成测试 | HTTP 语义、参数校验、重复邮箱、并发注册 | TODO |
@@ -191,4 +191,4 @@
 
 ## 当前任务
 
-当前任务为 `FND-03：Docker Compose 启动 MySQL`。`FND-02` 已完成构建、测试、依赖隔离、可执行 JAR 和 Actuator 运行验收。接下来按 `FND-03 → FND-04 → FND-05` 建立数据库、迁移和测试基线，再进入第一个业务闭环 `ACC-01`。
+当前任务为 `ACC-02：实现 Account 持久化适配器`。`FND-05` 已验证 `./mvnw clean verify` 在不加载 `.env`、不依赖本地 Compose 数据库的情况下，自动启动隔离的 MySQL 8.4、执行同一套 Flyway V1 迁移、断言 `account` 表存在并在测试后清理。下一步先完成持久化技术选型和包边界设计，再由领域模型、Repository 端口、数据库适配器到集成测试逐层实现。
