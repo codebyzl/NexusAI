@@ -1,7 +1,7 @@
 package io.github.codebyzl.nexus.auth.account.domain;
 
-import com.baomidou.mybatisplus.annotation.EnumValue;
 
+import java.util.Arrays;
 
 public enum AccountStatus {
 
@@ -9,7 +9,7 @@ public enum AccountStatus {
     LOCKED(2),
     DISABLED(3);
 
-    @EnumValue
+
     private final int code;
 
     AccountStatus(int code) {
@@ -20,4 +20,13 @@ public enum AccountStatus {
         return code;
     }
 
+    public static AccountStatus fromCode(int code) {
+        return Arrays.stream(values())
+                .filter(status -> status.code == code)
+                .findFirst()
+                .orElseThrow(() ->
+                        new IllegalArgumentException(
+                                "未知账号状态：" + code
+                        ));
+    }
 }
