@@ -19,13 +19,27 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
-public class AccountRepositoryTest {
+class AccountRepositoryTest {
+
     @Autowired
     private AccountRepository accountRepository;
 
+    private Account saveAccount(String email) {
+        Account account = Account.register(
+                new Email(email),
+                "dwdqwdqwdq"
+        );
+
+        return accountRepository.save(account);
+    }
+
     @Test
-    public void accountSaveTest() {
-        Account account = Account.register(new Email("1324533233@qq.com"), "dwdqwdqwdq");
+    void accountSaveTest() {
+        Account account = Account.register(
+                new Email("save@qq.com"),
+                "dwdqwdqwdq"
+        );
+
         Account saved = accountRepository.save(account);
 
         assertThat(saved)
@@ -35,14 +49,28 @@ public class AccountRepositoryTest {
     }
 
     @Test
-    public void accountFindByIdTest() {
-        Account account = accountRepository.findById(1l).orElse(null);
-        assertThat(account).isNotNull();
+    void accountFindByIdTest() {
+        Account saved = saveAccount("find-id@qq.com");
+
+        Account found = accountRepository
+                .findById(saved.getId())
+                .orElseThrow();
+
+        assertThat(found)
+                .usingRecursiveComparison()
+                .isEqualTo(saved);
     }
 
     @Test
-    public void accountFindByEmailTest() {
-        Account account = accountRepository.findByEmail(new Email("1324533233@qq.com")).orElse(null);
-        assertThat(account).isNotNull();
+    void accountFindByEmailTest() {
+        Account saved = saveAccount("find-email@qq.com");
+
+        Account found = accountRepository
+                .findByEmail(saved.getEmail())
+                .orElseThrow();
+
+        assertThat(found)
+                .usingRecursiveComparison()
+                .isEqualTo(saved);
     }
 }
