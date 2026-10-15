@@ -480,71 +480,6 @@ Request 负责 HTTP 参数，Command 表达注册意图，Account 维护业务�
 
 > MyBatis-Plus 的 `IService` 更适合面向 PO 的通用 CRUD。账号、会话和消息存在状态转换、并发约束和安全规则，因此项目保留 `BaseMapper` 的数据库能力，但在业务层前增加领域 Repository 边界。对于简单字典和后台配置类功能，则不会强制使用完整领域模型。
 
-## 当前进度和下一步
-
-当前已经完成：
-
-- Maven 多模块和依赖隔离。
-- 最小 AuthService。
-- Compose MySQL。
-- JDBC、HikariCP 和 Flyway。
-- account 表。
-- Testcontainers 测试基线。
-- MyBatis-Plus 基础映射和集成测试。
-- Account 代码已经按业务移动到 `account` 下面。
-- 创建了 `Account`、`AccountStatus` 和 `Email` 领域基础对象。
-- Domain 已经去掉 MyBatis-Plus 的 `@EnumValue` 依赖。
-- `AccountPo.status` 使用 `Integer` 表达数据库字段。
-- Flyway 表结构测试和 Mapper 集成测试都已恢复并通过。
-
-`ACC-02` 还没有完成。目前已经有领域基础和数据库访问层，下一步要把两个部分真正连接起来：
-
-```text
-完善 Account 的 register/restore 创建入口
-AccountPersistenceConverter
-AccountRepository 接口
-MyBatisAccountRepository 实现
-按邮箱查询
-邮箱是否存在
-Repository 集成测试
-重复邮箱测试
-```
-
-后续注册闭环完成后，预计一次请求会按照下面的路径流转。假设客户端发送：
-
-```
-{
-  "email": "User@Example.com",
-  "password": "password123"
-}
-```
-
-完整流程：
-
-```text
-1. RegistrationController 接收 JSON
-2. Jackson 创建 RegisterAccountRequest
-3. @Valid 校验邮箱和密码
-4. Controller 创建 RegisterAccountCommand
-5. AccountRegistrationService 接收 Command
-6. Email 值对象规范化邮箱
-7. AccountRepository 检查邮箱是否存在
-8. PasswordHasher 生成密码哈希
-9. Account.register() 创建领域实体
-10. AccountRepository.save(account)
-11. MyBatisAccountRepository 将 Account 转为 AccountPo
-12. AccountMapper.insert(accountPo)
-13. MySQL 生成主键和时间
-14. AccountPo 转回 Account
-15. Application Service 生成 Result
-16. Controller 将 Result 转成 Response
-17. Jackson 返回 JSON
-```
-
-## 后续开发阶段（计划）
-
-下面这些阶段目前都还没有完成，只是先按开发依赖关系排好顺序。以后每完成一个阶段，再把计划内容改成实际开发记录。
-
 ### 第五阶段：完成账号注册闭环
 
 - 完善 `Account`，完成 `AccountRepository` 和 MyBatis 适配器。
@@ -556,6 +491,31 @@ Repository 集成测试
 - 补充分环境配置、统一错误响应、日志和 Trace ID。
 
 完成标志：通过 HTTP 可以注册账号，密码以安全哈希保存，重复注册在并发情况下仍然只能成功一次。
+
+> 对比 InfiniteChat 原注册流程为：
+>
+>  ```text
+>    校验验证码
+>    → 查询邮箱是否存在
+>    → 校验两次密码
+>    → 固定盐 MD5
+>    → synchronized(email.intern())
+>    → 保存用户
+>    → 创建默认 AI 会话
+>    → 生成 JWT
+>    → JWT 保存到 Redis
+>  ```
+>
+>  NexusAI 要对比改进的地方，InfiniteChat 并不是没有做正确性保护：数据库中确实有邮箱唯一索引。但还存在以下改进空间：
+>
+>  - 固定盐 MD5 改为 BCrypt/Argon2。
+>  - synchronized(email.intern()) 只对单 JVM 有效，多节点无效。
+>  - 注册、默认会话创建、JWT 签发混在一个大方法中。
+>  - 当前没有看到注册方法的明确事务边界，可能发生用户创建成功但会话创建失败。
+>  - 注册直接依赖 Redis、MyBatis-Plus、会话服务和节点选择，职责较重。
+>  - 注册即签发 Token，使注册和登录会话强耦合。
+
+
 
 ### 第六阶段：登录、Token 和设备会话
 
