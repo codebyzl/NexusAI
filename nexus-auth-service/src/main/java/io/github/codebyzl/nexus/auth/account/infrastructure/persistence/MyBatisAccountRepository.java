@@ -2,10 +2,12 @@ package io.github.codebyzl.nexus.auth.account.infrastructure.persistence;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import io.github.codebyzl.nexus.auth.account.application.exception.EmailAlreadyRegisteredException;
 import io.github.codebyzl.nexus.auth.account.domain.Account;
 import io.github.codebyzl.nexus.auth.account.domain.AccountRepository;
 import io.github.codebyzl.nexus.auth.account.domain.Email;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
@@ -24,12 +26,17 @@ public class MyBatisAccountRepository implements AccountRepository {
         // Account → AccountPo
         AccountPo accountPo = AccountPersistenceConverter.toPo(account);
 
+
         if (id == null) {
             // 新账号：插入
             // Mapper insert
-            int inserted = accountMapper.insert(accountPo);
-            if (inserted != 1) {
-                throw new IllegalStateException("账号插入失败");
+            try {
+                int inserted = accountMapper.insert(accountPo);
+                if (inserted != 1) {
+                    throw new IllegalStateException("账号插入失败");
+                }
+            } catch (DuplicateKeyException exception) {
+                throw new EmailAlreadyRegisteredException();
             }
             id = accountPo.getId();
         } else {
