@@ -4,6 +4,7 @@ import io.github.codebyzl.nexus.auth.account.application.exception.EmailAlreadyR
 import io.github.codebyzl.nexus.auth.account.domain.Account;
 import io.github.codebyzl.nexus.auth.account.domain.AccountRepository;
 import io.github.codebyzl.nexus.auth.account.domain.Email;
+import io.github.codebyzl.nexus.auth.application.security.PasswordHasher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

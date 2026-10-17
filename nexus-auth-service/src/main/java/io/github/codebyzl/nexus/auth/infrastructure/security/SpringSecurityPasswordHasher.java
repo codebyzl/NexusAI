@@ -1,6 +1,6 @@
-package io.github.codebyzl.nexus.auth.account.infrastructure.security;
+package io.github.codebyzl.nexus.auth.infrastructure.security;
 
-import io.github.codebyzl.nexus.auth.account.application.PasswordHasher;
+import io.github.codebyzl.nexus.auth.application.security.PasswordHasher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -14,6 +14,11 @@ public class SpringSecurityPasswordHasher implements PasswordHasher {
     @Override
     public String hash(String rawPassword) {
         return encoder.encode(rawPassword);
+    }
+
+    @Override
+    public boolean matches(String rawPassword, String hashedPassword) {
+         return encoder.matches(rawPassword, hashedPassword);
     }
 
 }

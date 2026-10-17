@@ -1,4 +1,4 @@
-package io.github.codebyzl.nexus.auth.account.application;
+package io.github.codebyzl.nexus.auth.application.security;
 
 /**
  * @author: Victor_zl
@@ -7,4 +7,6 @@ package io.github.codebyzl.nexus.auth.account.application;
  */
 public interface PasswordHasher {
     String hash(String rawPassword);
+
+    boolean matches(String rawPassword, String hashedPassword);
 }

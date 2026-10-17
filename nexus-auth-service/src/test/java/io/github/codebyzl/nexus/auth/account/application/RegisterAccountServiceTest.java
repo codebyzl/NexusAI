@@ -1,8 +1,6 @@
 package io.github.codebyzl.nexus.auth.account.application;
 
-import io.github.codebyzl.nexus.auth.account.application.PasswordHasher;
-import io.github.codebyzl.nexus.auth.account.application.RegisterAccountCommand;
-import io.github.codebyzl.nexus.auth.account.application.RegisterAccountService;
+import io.github.codebyzl.nexus.auth.application.security.PasswordHasher;
 import io.github.codebyzl.nexus.auth.account.application.exception.EmailAlreadyRegisteredException;
 import io.github.codebyzl.nexus.auth.account.domain.AccountRepository;
 import io.github.codebyzl.nexus.auth.support.TestcontainersConfiguration;

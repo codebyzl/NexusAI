@@ -35,7 +35,7 @@
 
 | ID | 任务 | 关键知识点 | 状态 |
 |---|---|---|---|
-| AUTH-01 | 账号密码登录 | 认证与授权、统一失败信息、防账号枚举 | TODO |
+| AUTH-01 | 账号密码登录 | 认证与授权、统一失败信息、防账号枚举 | VERIFY |
 | AUTH-02 | Access Token | JWT 结构、签名、过期、Claims、对称/非对称密钥 | TODO |
 | AUTH-03 | 登录会话与 Refresh Token | Stateful/Stateless、Token 哈希、设备会话 | TODO |
 | AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | TODO |
@@ -191,4 +191,4 @@
 
 ## 当前任务
 
-当前任务为 `ACC-05：注册接口与集成测试`，状态为 `VERIFY`。最小注册 HTTP 接口、请求参数校验、统一业务异常、错误响应和数据库唯一键冲突转换已经实现，并通过跳过测试的编译验证。按照当前学习节奏暂不新增 HTTP 与并发测试；后续补充最小接口验证后可标记为 `DONE`，再进入 `AUTH-01：账号密码登录`。
+当前任务为 `AUTH-01：账号密码登录`，状态为 `VERIFY`。密码哈希端口已提升为 AuthService 共享能力，并补充密码匹配；登录应用服务、统一凭据失败异常和 `POST /api/auth/login` 接口已经实现，账号不存在、密码错误和账号不可登录均返回统一的 `INVALID_CREDENTIALS` 语义。当前已通过跳过测试的编译验证；后续补充最小登录验证和时序枚举防护后可标记为 `DONE`，再进入 `AUTH-02：Access Token`。
