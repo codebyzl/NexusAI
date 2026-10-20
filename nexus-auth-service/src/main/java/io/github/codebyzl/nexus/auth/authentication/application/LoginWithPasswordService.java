@@ -3,6 +3,8 @@ package io.github.codebyzl.nexus.auth.authentication.application;
 import io.github.codebyzl.nexus.auth.account.domain.Account;
 import io.github.codebyzl.nexus.auth.account.domain.AccountRepository;
 import io.github.codebyzl.nexus.auth.account.domain.Email;
+import io.github.codebyzl.nexus.auth.application.security.AccessTokenIssuer;
+import io.github.codebyzl.nexus.auth.application.security.IssuedAccessToken;
 import io.github.codebyzl.nexus.auth.application.security.PasswordHasher;
 import io.github.codebyzl.nexus.auth.authentication.application.exception.InvalidCredentialsException;
 import lombok.RequiredArgsConstructor;
@@ -17,10 +19,10 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class LoginWithPasswordService {
+
     private final AccountRepository accountRepository;
     private final PasswordHasher passwordHasher;
-
-
+    private final AccessTokenIssuer accessTokenIssuer;
 
     @Transactional(readOnly = true)
     public LoginWithPasswordResult login(LoginWithPasswordCommand command) {
@@ -29,11 +31,21 @@ public class LoginWithPasswordService {
         Account account = accountRepository.findByEmail(email)
                 .orElseThrow(InvalidCredentialsException::new);
 
-        if (!account.canLogin() || !passwordHasher.matches(command.rawPassword(), account.getPasswordHash()))
-        {
+        if (!account.canLogin()
+                || !passwordHasher.matches(
+                        command.rawPassword(),
+                        account.getPasswordHash()
+                )) {
             throw new InvalidCredentialsException();
         }
 
-        return new LoginWithPasswordResult(account.getId(), account.getEmail().value());
+        IssuedAccessToken accessToken = accessTokenIssuer.issue(account.getId());
+
+        return new LoginWithPasswordResult(
+                account.getId(),
+                account.getEmail().value(),
+                accessToken.value(),
+                accessToken.expiresAt()
+        );
     }
 }

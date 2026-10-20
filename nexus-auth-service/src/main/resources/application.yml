@@ -21,6 +21,12 @@ server:
     context-path: /api
 
 
+nexus:
+  security:
+    jwt:
+      issuer: nexus-auth-service
+      access-token-ttl: 15m
+      secret: "${JWT_ACCESS_TOKEN_SECRET}"
 
 management:
   endpoints:

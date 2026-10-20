@@ -30,7 +30,10 @@ public class AuthController {
 
         return new LoginWithPasswordResponse(
                 result.accountId(),
-                result.email()
+                result.email(),
+                result.accessToken(),
+                "Bearer",
+                result.accessTokenExpiresAt()
         );
     }
 }

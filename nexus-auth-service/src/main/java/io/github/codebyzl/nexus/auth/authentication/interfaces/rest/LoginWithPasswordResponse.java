@@ -1,5 +1,7 @@
 package io.github.codebyzl.nexus.auth.authentication.interfaces.rest;
 
+import java.time.Instant;
+
 /**
  * @author: Victor_zl
  * @version: 1.0
@@ -7,6 +9,9 @@ package io.github.codebyzl.nexus.auth.authentication.interfaces.rest;
  */
 public record LoginWithPasswordResponse(
         Long accountId,
-        String email
+        String email,
+        String accessToken,
+        String tokenType,
+        Instant accessTokenExpiresAt
 ) {
 }

@@ -36,7 +36,7 @@
 | ID | 任务 | 关键知识点 | 状态 |
 |---|---|---|---|
 | AUTH-01 | 账号密码登录 | 认证与授权、统一失败信息、防账号枚举 | VERIFY |
-| AUTH-02 | Access Token | JWT 结构、签名、过期、Claims、对称/非对称密钥 | TODO |
+| AUTH-02 | Access Token | JWT 结构、签名、过期、Claims、对称/非对称密钥 | VERIFY |
 | AUTH-03 | 登录会话与 Refresh Token | Stateful/Stateless、Token 哈希、设备会话 | TODO |
 | AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | TODO |
 | AUTH-05 | 退出、撤销和多设备策略 | 撤销、过期、并发刷新、设备管理 | TODO |
@@ -191,4 +191,4 @@
 
 ## 当前任务
 
-当前任务为 `AUTH-01：账号密码登录`，状态为 `VERIFY`。密码哈希端口已提升为 AuthService 共享能力，并补充密码匹配；登录应用服务、统一凭据失败异常和 `POST /api/auth/login` 接口已经实现，账号不存在、密码错误和账号不可登录均返回统一的 `INVALID_CREDENTIALS` 语义。当前已通过跳过测试的编译验证；后续补充最小登录验证和时序枚举防护后可标记为 `DONE`，再进入 `AUTH-02：Access Token`。
+当前任务为 `AUTH-02：Access Token`，状态为 `VERIFY`。登录成功后可通过应用层端口签发 HS256 JWT，包含 `iss`、`sub`、`iat`、`exp`、`jti` 和 `token_type`，有效期为 15 分钟；签名密钥通过环境变量注入并执行 Base64 与 256 bit 长度校验，测试使用独立的非生产配置。现有 9 个测试已在不设置外部 JWT 密钥的情况下通过；后续补充最小 Token 验证后可标记为 `DONE`，再进入 `AUTH-03：登录会话与 Refresh Token`。
