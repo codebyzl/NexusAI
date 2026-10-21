@@ -1,6 +1,6 @@
-package io.github.codebyzl.nexus.auth.infrastructure.security;
+package io.github.codebyzl.nexus.auth.infrastructure.security.password;
 
-import io.github.codebyzl.nexus.auth.application.security.PasswordHasher;
+import io.github.codebyzl.nexus.auth.application.security.password.PasswordHasher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;

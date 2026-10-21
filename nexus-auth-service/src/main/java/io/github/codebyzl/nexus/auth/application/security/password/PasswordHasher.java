@@ -1,4 +1,4 @@
-package io.github.codebyzl.nexus.auth.application.security;
+package io.github.codebyzl.nexus.auth.application.security.password;
 
 /**
  * @author: Victor_zl

@@ -27,6 +27,9 @@ nexus:
       issuer: nexus-auth-service
       access-token-ttl: 15m
       secret: "${JWT_ACCESS_TOKEN_SECRET}"
+    refresh-token:
+      ttl: 7d
+      byte-length: 32
 
 management:
   endpoints:

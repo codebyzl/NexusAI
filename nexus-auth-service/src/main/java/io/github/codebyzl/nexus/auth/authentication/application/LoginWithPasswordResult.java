@@ -11,6 +11,8 @@ public record LoginWithPasswordResult(
         Long accountId,
         String email,
         String accessToken,
-        Instant accessTokenExpiresAt
+        Instant accessTokenExpiresAt,
+        String refreshToken,
+        Instant refreshTokenExpiresAt
 ) {
 }

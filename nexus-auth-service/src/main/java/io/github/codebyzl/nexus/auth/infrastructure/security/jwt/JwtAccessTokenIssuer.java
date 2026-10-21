@@ -1,7 +1,7 @@
 package io.github.codebyzl.nexus.auth.infrastructure.security.jwt;
 
-import io.github.codebyzl.nexus.auth.application.security.AccessTokenIssuer;
-import io.github.codebyzl.nexus.auth.application.security.IssuedAccessToken;
+import io.github.codebyzl.nexus.auth.application.security.jwt.AccessTokenIssuer;
+import io.github.codebyzl.nexus.auth.application.security.jwt.IssuedAccessToken;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
@@ -21,13 +21,14 @@ public class JwtAccessTokenIssuer implements AccessTokenIssuer {
     private final JwtProperties properties;
 
     @Override
-    public IssuedAccessToken issue(Long accountId) {
+    public IssuedAccessToken issue(Long accountId, UUID sessionId) {
         Instant issuedAt = Instant.now();
         Instant expiresAt = issuedAt.plus(properties.accessTokenTtl());
 
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .issuer(properties.issuer())
                 .subject(accountId.toString())
+                .claim("sid", sessionId.toString())
                 .issuedAt(issuedAt)
                 .expiresAt(expiresAt)
                 .id(UUID.randomUUID().toString())

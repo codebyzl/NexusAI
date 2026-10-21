@@ -1,4 +1,4 @@
-package io.github.codebyzl.nexus.auth.infrastructure.security;
+package io.github.codebyzl.nexus.auth.infrastructure.security.password;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

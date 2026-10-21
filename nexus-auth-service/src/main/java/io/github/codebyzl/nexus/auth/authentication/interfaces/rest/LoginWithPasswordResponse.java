@@ -12,6 +12,8 @@ public record LoginWithPasswordResponse(
         String email,
         String accessToken,
         String tokenType,
-        Instant accessTokenExpiresAt
+        Instant accessTokenExpiresAt,
+        String refreshToken,
+        Instant refreshTokenExpiresAt
 ) {
 }

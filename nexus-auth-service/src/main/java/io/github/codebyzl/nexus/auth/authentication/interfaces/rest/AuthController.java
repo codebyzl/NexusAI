@@ -33,7 +33,9 @@ public class AuthController {
                 result.email(),
                 result.accessToken(),
                 "Bearer",
-                result.accessTokenExpiresAt()
+                result.accessTokenExpiresAt(),
+                result.refreshToken(),
+                result.refreshTokenExpiresAt()
         );
     }
 }
