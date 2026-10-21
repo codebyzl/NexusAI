@@ -48,10 +48,12 @@
 
 | ID | InfiniteChat 当前实现 | 常见问题 | NexusAI 改进 | 验证方式 | 状态 |
 |---|---|---|---|---|---|
-| AUTH-01 | Gateway 验证 Token，但下游接口继续信任请求参数中的 `userId` | IDOR/越权：用户 A 可把参数改成用户 B | 从可信 Token/SecurityContext 获得 `actorId`；客户端 userId 只能作为被操作资源，不能代表操作者 | 用户 A/B 越权集成测试 | 待设计 |
-| AUTH-02 | WebSocket 认证了 Channel，但消息中的 `senderId` 未与 Channel 身份强绑定 | 已登录用户可以伪造发送者 | 服务端忽略客户端 senderId，使用 Channel 上的认证身份 | 伪造 senderId 协议测试 | 待设计 |
-| AUTH-03 | 固定盐加 MD5 保存密码 | 抗暴力破解能力不足 | Argon2id 或 bcrypt；每个密码独立盐；参数可升级 | 密码验证测试；哈希参数审查 | 待设计 |
-| AUTH-04 | JWT 密钥和 MinIO 凭据存在源码配置；Token 以 userId 单值存储 | 密钥泄露、无法良好支持多设备和刷新令牌轮换 | Secret 外部注入；设备登录会话；Refresh Token 哈希、轮换、撤销与复用检测 | secret 扫描；多设备与重放测试 | 待设计 |
+| GW-04/GW-05 | Gateway 验证 Token，但下游接口继续信任请求参数中的 `userId` | IDOR/越权：用户 A 可把参数改成用户 B | 从可信 Token/SecurityContext 获得 `actorId`；客户端 userId 只能作为被操作资源，不能代表操作者 | 用户 A/B 越权集成测试 | 待设计 |
+| RT-02/RT-06 | WebSocket 认证了 Channel，但消息中的 `senderId` 未与 Channel 身份强绑定 | 已登录用户可以伪造发送者 | 服务端忽略客户端 senderId，使用 Channel 上的认证身份 | 伪造 senderId 协议测试 | 待设计 |
+| ACC-04 | 固定盐加 MD5 保存密码 | 抗暴力破解能力不足 | 通过应用层 `PasswordHasher` 端口隔离密码能力，基础设施使用 Spring Security `DelegatingPasswordEncoder`，当前默认生成带算法标识的 bcrypt 哈希并支持后续算法升级 | 注册后数据库无明文密码；密码登录接口手动验证成功；现有构建测试通过 | 已验证（密码哈希与匹配链路已落地） |
+| AUTH-02 | JWT 密钥存在源码配置；Access Token 写入 Redis | 密钥泄漏；Access Token 被迫依赖服务端状态；按 userId 保存不适合多设备 | JWT 密钥通过环境变量注入并校验 Base64/256 bit；Access Token 使用包含 `sid` 的 15 分钟无状态 JWT | 无外部密钥执行 `clean verify`；登录接口解析 Claims 与 TTL | 已验证（签发链路已落地，专项自动化测试待补） |
+| AUTH-03 | Refresh Token 使用 JWT 原文并按 userId 单值存入 Redis | 原文泄漏后可直接使用；新设备登录覆盖旧设备；无法独立撤销某个会话 | 每次登录创建 UUID Session；Refresh Token 使用 256 bit 随机值，数据库只保存 SHA-256；Access Token 通过 `sid` 关联会话 | 登录接口与 `auth_session` 哈希手动核对；Flyway V2 和现有测试通过 | 已验证（专项自动化测试待补） |
+| AUTH-04 | 刷新时直接覆盖 Redis 中的 Refresh Token，没有历史状态和 Token Family | 无法区分普通无效 Token 与旧 Token 重放；并发刷新缺少可靠的一次性消费约束 | 保存 Refresh Token 历史状态，轮换时标记 `USED` 并创建后继 Token；重用旧 Token 时撤销整个 Session；事务内使用行锁串行化消费 | 正常轮换、旧 Token 重放、双请求并发刷新和跨 Session 隔离测试 | 实现中 |
 
 ## 5. 消息可靠性与实时通信
 
@@ -90,7 +92,7 @@
 | ID | InfiniteChat 当前实现 | 常见问题 | NexusAI 改进 | 验证方式 | 状态 |
 |---|---|---|---|---|---|
 | ENG-01 | 依赖全量 `schema.sql`，脚本包含 DROP/CREATE | 无迁移历史，升级可能破坏数据 | 从第一天使用 Flyway，迁移只前进并经过回滚评估 | 空库和旧版本升级测试 | 已验证（V1 account 迁移入库；历史与校验和已记录；重复启动不重复执行） |
-| ENG-02 | Java 测试主要是 `contextLoads()`；前端 E2E 契约与后端实现漂移 | 构建成功不能证明业务正确 | 单元、集成、契约、权限、并发和故障测试分层建设 | CI 质量门 | 部分验证（Testcontainers + MySQL 8.4 已建立数据库集成测试基线；Flyway V1 与 account 表结构进入构建验收） |
+| ENG-02 | Java 测试主要是 `contextLoads()`；前端 E2E 契约与后端实现漂移 | 构建成功不能证明业务正确 | 单元、集成、契约、权限、并发和故障测试分层建设 | CI 质量门 | 部分验证（Testcontainers + MySQL 8.4 已建立数据库集成测试基线；Flyway V1/V2 和 9 个测试进入构建验收；注册、登录与 Token 专项自动化测试仍待补充） |
 | ENG-03 | 监控主要集中在 AI 服务，且部分指标使用用户/会话等高基数标签 | 其他链路不可观测；指标系统可能被高基数拖垮 | 全链路低基数指标、结构化日志、Trace、SLO 和告警 | 压测观察；指标基数检查 | 待设计 |
 | ENG-04 | README、数据库表和集成测试描述不一致 | 文档不能代表真实系统 | API、事件和迁移作为可验证契约；文档纳入评审和 CI | 文档/契约一致性检查 | 待设计 |
 | ENG-05 | 基础设施需要手工创建 8 个容器，仓库没有 Compose 清单 | 环境难以复现，容器版本、端口、网络和启动条件容易因人而异 | 通过版本化 Compose 分阶段编排基础设施，声明持久卷、健康检查、网络和环境变量契约 | `docker compose config`；容器健康检查；数据持久化重启测试 | 已验证（MySQL 8.4 healthy；业务账号连接成功；容器重建后探针数据保留） |
@@ -107,7 +109,57 @@
 - 一分钟项目表达。
 - 高频面试问题与追问。
 
-## 10. 当前结论
+## 10. 当前认证阶段证据
+
+### ACC-04：密码安全
+
+实现位置：
+
+- `auth/application/security/password/PasswordHasher.java`
+- `auth/infrastructure/security/password/SpringSecurityPasswordHasher.java`
+- `auth/infrastructure/security/password/PasswordConfig.java`
+
+改进证据：注册只保存 Spring Security 生成的带算法标识密码哈希；登录通过同一端口匹配密码，应用层不依赖具体哈希算法。与固定盐 MD5 相比增加了计算成本，但显著提高了离线破解成本，并支持后续算法升级。
+
+### AUTH-02：Access Token
+
+实现位置：
+
+- `auth/application/security/jwt/AccessTokenIssuer.java`
+- `auth/infrastructure/security/jwt/JwtAccessTokenIssuer.java`
+- `auth/infrastructure/security/jwt/JwtConfig.java`
+- `auth/infrastructure/security/jwt/JwtProperties.java`
+
+改进证据：Access Token 使用 HS256、15 分钟 TTL，并包含 `iss/sub/sid/iat/exp/jti/token_type`；签名密钥来自环境变量，启动时校验 Base64 和 256 bit 最小长度。代价是当前对称密钥需要由签发方和未来验证方安全共享，后续可以根据服务边界评估 RSA/EC 非对称签名。
+
+### AUTH-03：登录会话与 Refresh Token
+
+实现位置：
+
+- `db/migration/V2__create_auth_session_table.sql`
+- `auth/authentication/domain/LoginSession.java`
+- `auth/authentication/infrastructure/persistence/MyBatisLoginSessionRepository.java`
+- `auth/infrastructure/security/token/SecureRandomRefreshTokenIssuer.java`
+- `auth/authentication/application/LoginWithPasswordService.java`
+
+改进证据：每次登录创建独立 UUID Session；Refresh Token 使用 32 字节 `SecureRandom`，数据库只保存 SHA-256；Access Token 通过 `sid` 关联 Session。登录接口已手动验证，数据库哈希与客户端原文重新计算结果一致；Flyway V1/V2 和现有 9 个测试通过。
+
+当前残余风险：还没有自动化覆盖 Token Claims、Session 写入、并发登录和重放；一个 Session 当前只保存一个 Refresh Token Hash，轮换历史与 Token Family 将在 `AUTH-04` 完成。
+
+### 当前认证阶段一分钟项目表达
+
+> InfiniteChat 把 Access Token 和 Refresh Token 都做成 JWT 原文，并按 userId 存入 Redis，这会让 Access Token 失去无状态优势，也会造成多设备覆盖和 Refresh Token 原文泄漏风险。NexusAI 将两类 Token 分开：Access Token 是 15 分钟无状态 JWT，Refresh Token 是 256 bit 高熵随机凭据；每次登录建立独立 Session，数据库只保存 Refresh Token 的 SHA-256，JWT 通过 `sid` 关联会话。密码从固定盐 MD5 改为 Spring Security 的可升级密码编码器，JWT 密钥通过环境变量注入。当前签发、登录和会话持久化链路已经走通，下一步实现 Refresh Token 轮换、Token Family 和旧 Token 复用检测。
+
+高频追问：
+
+- 为什么密码使用 bcrypt，而高熵 Refresh Token 可以使用 SHA-256？
+- 为什么 Access Token 无状态，Refresh Token 有状态？
+- 为什么 JWT 里保存 `sid`，但不保存邮箱和账号状态？
+- Refresh Token 原文泄漏与数据库 Hash 泄漏分别有什么风险？
+- 并发使用同一个 Refresh Token 时如何保证最多一个请求成功？
+- HS256 和 RSA/EC 的密钥分发边界有什么不同？
+
+## 11. 当前结论
 
 InfiniteChat 不是单纯的“错误项目”。它完成了大量组件的端到端串联，适合用来理解系统全貌；其问题也具有代表性，例如万能 Common、共享数据库、客户端身份不可信、异步双写、无幂等、时间戳式离线同步、WebSocket 集群路由错位和测试不足。
 

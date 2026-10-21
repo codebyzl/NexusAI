@@ -1,6 +1,8 @@
 # NexusAI 开发任务主线
 
 > 开发原则：按业务依赖和可验证闭环排序，不按中间件清单堆技术。每个任务依次经过：原项目阅读、原理与八股、方案说明、作者实现、代码审核、自动化验证、改进台账更新。
+>
+> 文档同步规则：每个功能提交前必须同步本路线图；任务进入 `VERIFY` 时同步 `docs/architecture-improvement-ledger.md` 的实现证据，并在 `docs/learning-journal.md` 记录实际实现、问题、验证结果和遗留边界。
 
 ## 状态说明
 
@@ -38,7 +40,7 @@
 | AUTH-01 | 账号密码登录 | 认证与授权、统一失败信息、防账号枚举 | VERIFY |
 | AUTH-02 | Access Token | JWT 结构、签名、过期、Claims、对称/非对称密钥 | VERIFY |
 | AUTH-03 | 登录会话与 Refresh Token | Stateful/Stateless、Token 哈希、设备会话 | VERIFY |
-| AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | TODO |
+| AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | DOING |
 | AUTH-05 | 退出、撤销和多设备策略 | 撤销、过期、并发刷新、设备管理 | TODO |
 | AUTH-06 | Redis 登录状态与验证码 | TTL、Key 规范、缓存与权威数据、限流 | TODO |
 | AUTH-07 | 认证安全测试 | 重放、暴力破解、越权、并发刷新 | TODO |
@@ -191,4 +193,4 @@
 
 ## 当前任务
 
-当前任务为 `AUTH-03：登录会话与 Refresh Token`，状态为 `VERIFY`。密码登录成功后会创建独立登录会话，使用 256 bit 高熵随机值作为 Refresh Token，数据库只保存 SHA-256 哈希；Access Token 增加 `sid` Claim 关联登录会话，并继续保持 15 分钟无状态 JWT。Flyway V2 已创建 `auth_session` 表，登录接口已通过手动端到端验证，Refresh Token 为 7 天有效期且数据库哈希与原文匹配；现有 9 个自动化测试通过。后续补充最小会话持久化验证后可标记为 `DONE`，再进入 `AUTH-04：Refresh Token 轮换`。
+当前任务为 `AUTH-04：Refresh Token 轮换`，状态为 `DOING`。`AUTH-03` 已完成独立登录会话、256 bit 高熵 Refresh Token、SHA-256 哈希持久化和 Access Token `sid` 关联，并通过登录接口与数据库哈希手动核对，现有 9 个自动化测试通过。当前阶段将把 Refresh Token 从“会话中的当前凭据”扩展为可追踪的一次性 Token Family，实现轮换、旧 Token 复用检测和数据库事务并发控制；退出、会话撤销与多设备管理留到 `AUTH-05`。

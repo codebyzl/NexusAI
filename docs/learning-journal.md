@@ -480,54 +480,284 @@ Request 负责 HTTP 参数，Command 表达注册意图，Account 维护业务�
 
 > MyBatis-Plus 的 `IService` 更适合面向 PO 的通用 CRUD。账号、会话和消息存在状态转换、并发约束和安全规则，因此项目保留 `BaseMapper` 的数据库能力，但在业务层前增加领域 Repository 边界。对于简单字典和后台配置类功能，则不会强制使用完整领域模型。
 
-### 第五阶段：完成账号注册闭环
+## ACC-03～ACC-05：账号注册闭环
 
-- 完善 `Account`，完成 `AccountRepository` 和 MyBatis 适配器。
-- 完成 `Account` 与 `AccountPo` 的双向转换。
-- 实现按邮箱查询和邮箱存在性判断。
-- 使用 bcrypt 或 Argon2 保存密码哈希，不保存明文密码。
-- 实现注册应用服务、事务边界、请求参数校验和注册接口。
-- 测试重复邮箱、非法参数和并发注册。
-- 补充分环境配置、统一错误响应、日志和 Trace ID。
+### 目标与业务流程
 
-完成标志：通过 HTTP 可以注册账号，密码以安全哈希保存，重复注册在并发情况下仍然只能成功一次。
+账号注册已经形成以下调用链：
 
-> 对比 InfiniteChat 原注册流程为：
->
->  ```text
->    校验验证码
->    → 查询邮箱是否存在
->    → 校验两次密码
->    → 固定盐 MD5
->    → synchronized(email.intern())
->    → 保存用户
->    → 创建默认 AI 会话
->    → 生成 JWT
->    → JWT 保存到 Redis
->  ```
->
->  NexusAI 要对比改进的地方，InfiniteChat 并不是没有做正确性保护：数据库中确实有邮箱唯一索引。但还存在以下改进空间：
->
->  - 固定盐 MD5 改为 BCrypt/Argon2。
->  - synchronized(email.intern()) 只对单 JVM 有效，多节点无效。
->  - 注册、默认会话创建、JWT 签发混在一个大方法中。
->  - 当前没有看到注册方法的明确事务边界，可能发生用户创建成功但会话创建失败。
->  - 注册直接依赖 Redis、MyBatis-Plus、会话服务和节点选择，职责较重。
->  - 注册即签发 Token，使注册和登录会话强耦合。
+```text
+POST /api/accounts
+→ RegisterAccountRequest
+→ RegisterAccountCommand
+→ RegisterAccountService
+→ Account.create
+→ PasswordHasher
+→ AccountRepository
+→ MyBatisAccountRepository
+→ account
+```
 
+接口成功时返回 `201 Created` 和注册结果 DTO。HTTP 请求对象只负责参数校验，应用层 Command 表达注册意图，领域对象维护账号状态，持久化适配器负责 MyBatis 和数据库约束。
 
+邮箱重复有两层保护：
 
-### 第六阶段：登录、Token 和设备会话
+1. 应用层先执行 `existsByEmail`，用于尽早返回可理解的业务错误。
+2. 数据库唯一索引作为最终约束，并把 `DuplicateKeyException` 转换为 `EmailAlreadyRegisteredException`。
 
-- 实现账号密码登录，并统一登录失败提示，避免泄露账号是否存在。
-- 生成和验证 Access Token。
-- 建立登录会话和 Refresh Token，数据库只保存 Refresh Token 哈希。
-- 实现 Refresh Token 轮换、复用检测、退出和撤销。
-- 明确多设备同时登录、互踢和会话过期规则。
-- 接入 Redis，用于验证码、短期状态和登录限流。
-- 接入邮件验证码，并测试暴力尝试、重放和并发刷新。
+第二层不能省略，因为两个并发请求可能同时通过第一层检查。`synchronized(email.intern())` 只能保护单 JVM，不能解决多实例并发注册。
 
-完成标志：注册、登录、刷新、退出和多设备会话形成完整认证闭环。
+### ACC-04：密码哈希
+
+密码能力通过应用层端口表达：
+
+```text
+PasswordHasher
+← SpringSecurityPasswordHasher
+← DelegatingPasswordEncoder
+```
+
+数据库只保存带算法标识的密码哈希，不保存明文密码。当前 Spring Security 默认使用 bcrypt，哈希自带随机盐；`DelegatingPasswordEncoder` 的 `{bcrypt}` 标识也为以后升级算法和兼容旧哈希保留了空间。
+
+这比 InfiniteChat 的固定盐 MD5 更抗离线暴力破解。代价是密码计算更慢，但这正是密码哈希需要的安全属性。
+
+### ACC-05：HTTP 接口与统一错误边界
+
+业务异常由 `BusinessException` 和字符串业务码表达，REST 层通过 `GlobalExceptionHandler` 转换为统一的 `ApiErrorResponse`。成功响应直接返回 DTO，不再给所有接口额外套一层固定响应对象。
+
+注册阶段已经处理：
+
+- 请求参数校验失败。
+- 邮箱已注册。
+- 数据库唯一键冲突。
+- 未预期服务器异常。
+
+当前 `ACC-05` 保持 `VERIFY`，因为 HTTP 参数、重复邮箱和并发注册的专项自动化测试尚未补齐。
+
+## AUTH-01：账号密码登录
+
+### 目标与业务流程
+
+密码登录接口为：
+
+```text
+POST /api/auth/login
+```
+
+应用服务依次完成：
+
+```text
+规范化邮箱
+→ 查询账号
+→ 检查账号状态
+→ PasswordHasher.matches
+→ 创建登录会话
+→ 返回 Token
+```
+
+邮箱不存在、密码错误、账号被锁定或禁用，对客户端统一返回：
+
+```text
+HTTP 401
+INVALID_CREDENTIALS
+```
+
+统一失败语义可以减少通过响应差异枚举已注册账号的风险。当前仍未做固定耗时或虚拟密码哈希，因此更严格的时序枚举防护留到 `AUTH-07`。
+
+## AUTH-02：Access Token
+
+### 实现
+
+JWT 使用 Spring Security OAuth2 JOSE，而不是再混用 JJWT。应用层只依赖：
+
+```text
+AccessTokenIssuer
+```
+
+基础设施层由 `JwtAccessTokenIssuer` 使用 `NimbusJwtEncoder` 实现。这样登录用例不依赖 Nimbus、HS256 或 Spring Security 的具体 API。
+
+Access Token 当前配置：
+
+```text
+算法：HS256
+有效期：15 分钟
+签发者：nexus-auth-service
+```
+
+Claims 包含：
+
+```text
+iss         签发者
+sub         accountId
+sid         登录会话 UUID
+iat         签发时间
+exp         过期时间
+jti         Token 唯一标识
+token_type  access
+```
+
+没有放入邮箱、昵称、密码哈希或账号状态。这些数据会变化或具有敏感性，不应该复制到短期身份凭据中。
+
+JWT 密钥通过 `JWT_ACCESS_TOKEN_SECRET` 环境变量注入。启动时检查：
+
+- 必须是合法 Base64。
+- 解码后至少 32 字节，即 256 bit。
+
+测试使用 `src/test/resources/application.properties` 中明确的非生产密钥，因此 `clean verify` 不依赖开发者本地的 `.env`，正式 JAR 也不会包含测试配置。
+
+## AUTH-03：登录会话与 Refresh Token
+
+### 实现
+
+Access Token 和 Refresh Token 采用不同状态模型：
+
+```text
+Access Token
+→ 短期 JWT
+→ 服务端不保存
+→ 适合高频访问验证
+
+Refresh Token
+→ 长期高熵随机字符串
+→ 服务端保存状态
+→ 用于刷新、撤销和重放检测
+```
+
+Flyway V2 创建了 `auth_session`。每次成功登录都会新增独立 Session，而不是按 userId 覆盖唯一 Token，因此同一账号可以存在多个登录会话。
+
+Refresh Token 的生成过程是：
+
+```text
+SecureRandom 生成 32 字节随机数
+→ Base64 URL Safe、无 Padding
+→ 返回原文给客户端
+→ 对原文计算 SHA-256
+→ 数据库只保存 64 位十六进制哈希
+```
+
+Refresh Token 已经具有 256 bit 随机熵，攻击者无法通过低成本字典枚举原文，因此数据库索引使用 SHA-256，而不是为低熵密码设计的 bcrypt。
+
+登录事务现在包含：
+
+```text
+校验账号密码
+→ 生成 Refresh Token
+→ 写入 auth_session
+→ 签发带 sid 的 Access Token
+→ 提交事务
+```
+
+Session 保存或 Token 签发发生运行时异常时，数据库事务会回滚，不留下半完成的登录会话。原始 Refresh Token 只在登录响应中返回，不写数据库和日志。
+
+### 实现中遇到的问题
+
+#### 配置属性没有自动注册
+
+增加 `RefreshTokenProperties` 后，仅添加 `@ConfigurationProperties` 还不够。项目最终在启动类使用：
+
+```java
+@ConfigurationPropertiesScan
+```
+
+统一扫描 `JwtProperties` 和 `RefreshTokenProperties`，避免每组配置都创建一个只含 `@EnableConfigurationProperties` 的空配置类。
+
+#### 领域对象不能直接作为 MyBatis PO
+
+`LoginSessionMapper` 最初容易写成：
+
+```java
+BaseMapper<LoginSession>
+```
+
+最终改为：
+
+```java
+BaseMapper<LoginSessionPo>
+```
+
+由 `LoginSessionPersistenceConverter` 负责：
+
+```text
+UUID ⇄ CHAR(36)
+LoginSessionStatus ⇄ TINYINT
+LoginSession ⇄ LoginSessionPo
+```
+
+领域层因此不需要 MyBatis 注解和数据库字段类型。
+
+#### 包结构逐渐混乱
+
+安全能力增多后，应用层和基础设施层都按能力增加子包：
+
+```text
+security/jwt
+security/password
+security/token
+```
+
+应用层保存端口，基础设施层保存 Spring Security、Nimbus、SecureRandom 等具体实现。功能专属的 Session 领域和持久化代码继续放在 `authentication` 下。
+
+### 验证结果与边界
+
+执行：
+
+```bash
+env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify
+```
+
+结果：
+
+```text
+Flyway V1/V2 执行成功
+Tests run: 9
+Failures: 0
+Errors: 0
+BUILD SUCCESS
+```
+
+登录接口也已手动走通，并核对：
+
+- Access Token TTL 为 900 秒。
+- JWT 的 `sub`、`iss`、`sid`、`jti` 和 `token_type` 正确。
+- Refresh Token 解码后为 32 字节。
+- Refresh Token 有效期为 7 天。
+- `auth_session` 中只保存 SHA-256，且与接口返回原文重新计算的哈希一致。
+
+当前自动化测试主要覆盖账号与数据库基线，尚未直接覆盖登录 HTTP、JWT Claims 和 Session 写入，所以 `ACC-05`、`AUTH-01`、`AUTH-02`、`AUTH-03` 保持 `VERIFY`，不提前标记为 `DONE`。
+
+## AUTH-04：Refresh Token 轮换
+
+### 目标
+
+让客户端在 Access Token 过期后，可以使用 Refresh Token 获得新的 Token，并且每个 Refresh Token 只能使用一次。
+
+### 核心业务流程
+
+```text
+客户端提交 Refresh Token
+→ 计算 SHA-256 Hash
+→ 查询对应 Token/Session
+→ 检查会话状态和过期时间
+→ 将旧 Refresh Token 标记为已使用
+→ 生成新的 Refresh Token
+→ 签发新的 Access Token
+→ 返回新 Token 对
+```
+
+### 当前设计重点
+
+当前 Session 只保存一个 Refresh Token 哈希，覆盖旧 Hash 无法区分普通无效 Token 和已被重放的旧 Token。AUTH-04 将增加可追踪的 Token Family：
+
+```text
+一次性 Refresh Token
+→ 使用后标记 USED
+→ 签发后继 Token
+→ 记录 replacedBy
+→ 旧 Token 再次出现时撤销整个 Session
+→ 使用数据库行锁保证并发刷新最多成功一次
+```
+
+Refresh Token 采用绝对会话过期时间，轮换不会无限延长登录期限。退出、主动撤销与多设备管理留到 `AUTH-05`；Redis、验证码和登录限流留到 `AUTH-06`，不在轮换阶段提前引入。
 
 ### 第七阶段：API Gateway 和可信身份
 
@@ -667,9 +897,11 @@ Request 负责 HTTP 参数，Command 表达注册意图，Account 维护业务�
 后面每完成一个小阶段，我用下面这个格式继续追加。内容以实际开发为主，不为了完整而硬凑。
 
 ````markdown
-## 阶段名称
+## TASK-ID：模块名称
 
-### 这一步要做什么
+> 实际记录按 `docs/development-roadmap.md` 的任务 ID 组织，例如 `AUTH-04：Refresh Token 轮换`，不再只按宽泛阶段汇总。
+
+### 目标与核心业务流程
 
 简单写清楚目标和开始前不理解的地方。
 
