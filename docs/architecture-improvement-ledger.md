@@ -54,6 +54,7 @@
 | AUTH-02 | JWT 密钥存在源码配置；Access Token 写入 Redis | 密钥泄漏；Access Token 被迫依赖服务端状态；按 userId 保存不适合多设备 | JWT 密钥通过环境变量注入并校验 Base64/256 bit；Access Token 使用包含 `sid` 的 15 分钟无状态 JWT | 无外部密钥执行 `clean verify`；登录接口解析 Claims 与 TTL | 已验证（签发链路已落地，专项自动化测试待补） |
 | AUTH-03 | Refresh Token 使用 JWT 原文并按 userId 单值存入 Redis | 原文泄漏后可直接使用；新设备登录覆盖旧设备；无法独立撤销某个会话 | 每次登录创建 UUID Session；Refresh Token 使用 256 bit 随机值，数据库只保存 SHA-256；Access Token 通过 `sid` 关联会话 | 登录接口与 `auth_session` 哈希手动核对；Flyway V2 和现有测试通过 | 已验证（专项自动化测试待补） |
 | AUTH-04 | 刷新时直接覆盖 Redis 中的 Refresh Token，没有历史状态和 Token Family | 无法区分普通无效 Token 与旧 Token 重放；并发刷新缺少可靠的一次性消费约束 | 保存 Refresh Token 历史状态，轮换时标记 `USED` 并创建后继 Token；重用旧 Token 时撤销整个 Session；事务内按 Session→Token 顺序使用行锁串行化消费 | 正常轮换、旧 Token 重放、双请求并发刷新和跨 Session 隔离测试 | 待验证（生产链路已实现，专项自动化测试待补） |
+| AUTH-05 | 缺少清晰的当前会话退出、指定设备撤销和多设备会话语义 | 只删除客户端 Token 无法阻止 Refresh Token 继续换取新凭据；按 userId 全量覆盖又会误伤其他设备 | 当前退出使用 Refresh Token 定位独立 Session，事务内按 Session→Token 加锁并撤销该 Family；接口幂等返回 204，后续再扩展会话列表和按设备撤销 | 当前 Token 退出、重复退出、USED Token、刷新/退出并发及跨 Session 隔离测试 | 实现中（当前会话退出已实现，多设备管理待补） |
 
 ## 5. 消息可靠性与实时通信
 
@@ -165,6 +166,23 @@
 当前验证：`env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify` 成功，Flyway V1/V2/V3 在全新 MySQL 8.4 容器执行成功，现有 9 个测试全部通过。残余验证缺口是正常 R1→R2 轮换、R1 重放后的撤销提交、同一 R1 并发刷新和不同 Session 隔离测试，因此状态为“待验证”而非“已验证”。
 
 代价与边界：数据库需要保存 Token 历史并定期清理；严格复用检测要求客户端实现 single-flight，否则同一 R1 的正常并发刷新也可能撤销会话；Access Token 当前固定 15 分钟，若在 Session 即将过期时签发，最多可能比 Session 多存活约 15 分钟，是否将 Access Token `exp` 截断到 Session 绝对过期时间留待后续安全策略确认。
+
+### AUTH-05：当前会话退出
+
+实现位置：
+
+- `auth/authentication/application/LogoutCommand.java`
+- `auth/authentication/application/LogoutService.java`
+- `auth/authentication/interfaces/rest/LogoutRequest.java`
+- `auth/authentication/interfaces/rest/AuthController.java`
+
+当前实现：`POST /api/auth/logout` 接收当前客户端持有的 Refresh Token。应用服务只用第一次普通 Hash 查询定位 `sessionId`，随后按 AUTH-04 已确定的 Session→Token 顺序执行锁定查询并重新确认关联关系，再把 LoginSession 改为 `REVOKED`，批量撤销该 Family 当前所有 `ACTIVE` Token。`USED` 历史保持不变，便于保留完整轮换和重放证据。
+
+接口选择 Refresh Token 而不是强制 Access Token，是因为 AuthService 当前尚未建立 Bearer Token Filter/SecurityContext，且用户退出时 Access Token 可能已经过期。Refresh Token 本身是只用于认证服务的长期凭据，可以直接定位当前设备 Session；以后查询或撤销其他设备 Session 时，仍必须依赖经过验证的 Access Token 获取可信 `accountId`，不能相信客户端提交的 accountId。
+
+退出采用幂等语义：未知 Token、记录已清理或会话已经撤销时不暴露内部状态，统一返回 `204 No Content`。在严格复用策略下，R1 轮换为 R2 后，R1 是 `USED` 而不是时间过期；再次提交 R1 仍会结束整个有效 Family，这是有意的重放响应。所有 Token 与 Session 当前共享同一绝对过期时间，因此真正超过 `expires_at` 的 Token 所属 Session 也已经自然失效。
+
+边界与代价：撤销 Session 会立即禁止 Refresh Token 继续轮换，但已经签发的无状态 Access Token 不会被数据库更新主动失效，最多继续存活约 15 分钟。若要求即时退出，需要未来由 Gateway 查询 Session/撤销状态或引入短期 denylist，这会增加状态查询和可用性成本。当前会话退出链路已通过完整构建，但尚未增加退出、重复退出、USED Token、刷新/退出并发和多 Session 隔离专项测试，多设备会话列表与指定设备撤销也尚未实现。
 
 ### 当前认证阶段一分钟项目表达
 

@@ -1,8 +1,6 @@
-# NexusAI 开发
+# NexusAI 开发学习日志
 
-## 工程初始化
-
-### 1.1 初始化 Maven 多模块工程
+## FND-01：Maven 父工程、Wrapper、Common 空模块与依赖隔离
 
 项目开始时先确认了本机环境：Java 21、Maven 3.9.9、Git、Docker 和 Docker Compose。Docker 实际由 OrbStack 提供。
 
@@ -50,7 +48,7 @@ JAR will be empty
 ./mvnw -pl nexus-common-kernel dependency:tree
 ```
 
-### 1.2 创建最小 AuthService
+## FND-02：创建最小可运行 AuthService
 
 AuthService 最开始只加入这些依赖：
 
@@ -71,9 +69,7 @@ info
 
 我没有直接暴露所有端点，也没有显示完整健康详情。现在用不到更多端点，暴露太多还可能泄露内部信息。
 
-## 数据库基础
-
-### 2.1 用 Compose 管理本地 MySQL
+## FND-03：Docker Compose 启动 MySQL
 
 一开始我觉得容器是不是应该部署时再做。后来决定开发阶段就用 Compose 固定 MySQL 版本、端口、账号、健康检查和数据卷。这样换机器或者以后让别人运行项目时，不需要重新手工搭数据库。
 
@@ -107,7 +103,7 @@ docker compose ps
 docker volume ls
 ```
 
-### 2.2 接入 JDBC 和 Flyway
+## FND-04：AuthService 接入 Flyway
 
 为了让 AuthService 连接数据库，我加入了：
 
@@ -128,7 +124,7 @@ docker volume ls
 → 应用继续启动
 ```
 
-#### 2.2.1 第一张表：account
+### 与 ACC-01 的衔接：第一张 account 表
 
 V1 迁移创建了 `account` 表，当前包含：
 
@@ -149,7 +145,7 @@ V1 迁移创建了 `account` 表，当前包含：
 3 = DISABLED
 ```
 
-#### 2.2.2 小坑：Flyway 校验和不一致
+### 遇到的问题：Flyway 校验和不一致
 
 V1 在本地数据库执行后，我修改了 SQL 里的注释标点。再次启动服务时出现：
 
@@ -165,13 +161,13 @@ Resolved locally    : -1817018923
 
 目前 Testcontainers 使用全新数据库，所以测试能通过；本地 Compose 数据库的校验和问题还没有处理。后面需要根据本地数据是否需要保留，决定恢复原始 V1，还是重建可丢弃的开发数据库。
 
-## 数据库自动化测试
+## FND-05：Testcontainers 数据库测试基线
 
-### 3.1 为什么改用 Testcontainers
+### 为什么改用 Testcontainers
 
 最开始测试直接依赖本地数据库。这样必须手工建表、准备数据，而且本地已有数据会影响测试结果，所以后面改成 Testcontainers。
 
-### 3.2 配置测试容器
+### 配置测试容器
 
 测试配置放在：
 
@@ -198,7 +194,7 @@ public class TestcontainersConfiguration {
 }
 ```
 
-### 3.3 使用过程中的理解和小坑
+### 使用过程中的理解和问题
 
 我现在的理解是：
 
@@ -225,7 +221,7 @@ JUnit JVM
 
 当前测试容器没有 Volume，也没有复用。测试结束后 JVM 退出，Ryuk 会清理容器，里面的数据也一起消失。这正是测试需要的隔离效果。
 
-### 3.4 当前验证结果
+### 当前验证结果
 
 目前有两个数据库测试：
 
@@ -248,13 +244,13 @@ Errors: 0
 BUILD SUCCESS
 ```
 
-## Account 持久化
+## ACC-01～ACC-02：Account 表与持久化适配器
 
-### 4.1 接入 MyBatis-Plus
+### 接入 MyBatis-Plus
 
 我选择继续使用 MyBatis-Plus，但不打算让业务代码直接到处使用 `BaseMapper` 和 `QueryWrapper`。目前先把数据库映射跑通，后面再加 Repository 这一层。
 
-#### 4.1.1 小坑：Starter 选错
+#### 遇到的问题：Starter 选错
 
 第一次引入的是：
 
@@ -278,7 +274,7 @@ mybatis-plus-spring-boot3-starter
 
 目前没有分页需求，所以没有因为旧项目用了分页插件就立刻添加 `mybatis-plus-jsqlparser`。
 
-### 4.2 完成 Account 表映射
+### 完成 Account 表映射
 
 现在有：
 
@@ -297,9 +293,9 @@ AccountPo
 
 `AccountMapperTest` 使用 `@Transactional`，测试结束后默认回滚，避免测试数据留在同一个测试数据库里。
 
-### 4.3 测试过程中遇到的问题
+### 测试过程中遇到的问题
 
-#### 4.3.1 JUnit 4 和 JUnit 5
+#### JUnit 4 和 JUnit 5
 
 第一个问题是临时测试错误导入了 JUnit 4：
 
@@ -315,11 +311,11 @@ import org.junit.jupiter.api.Test;
 
 IntelliJ 还保留过旧的 `SampleTest` 运行配置，尝试加载 JUnit Vintage。Maven 实际测试是正常的，重新加载 Maven 项目并重新创建 JUnit 5 运行配置后解决。
 
-#### 4.3.2 测试依赖本地 user 表
+#### 测试依赖本地 user 表
 
 第二个问题是临时测试依赖本地 `user` 表固定有5条数据。这种测试只能临时验证，不适合保留。正式测试应该自己准备数据，并在独立数据库中运行。
 
-#### 4.3.3 改用 AssertJ
+#### 改用 AssertJ
 
 断言现在使用 AssertJ：
 
@@ -329,7 +325,7 @@ assertThat(saved.getEmail()).isEqualTo("mapper-test@example.com");
 
 MyBatis-Plus 自己的 `Assert` 更偏向运行时参数检查；AssertJ 才是测试断言库，失败时给出的期望值和实际值也更清楚。
 
-### 4.4 从传统三层到按业务分包
+### 从传统三层到按业务分包
 
 我以前比较熟悉的结构是：
 
@@ -405,7 +401,7 @@ existsByEmail(Email)
 
 运行时虽然还是一路调用到 MyBatis，但编译时业务层只依赖自己定义的接口。Spring 启动后会把 `MyBatisAccountRepository` 注入 `AccountRepository`，这就是我现在对依赖倒置的理解：业务层声明自己需要什么，基础设施层来实现，而不是让领域对象知道 MyBatis。
 
-### 4.5 Entity、PO 和外部接口对象为什么分开
+### Entity、PO 和外部接口对象为什么分开
 
 目前 `Account` 和 `AccountPo` 不再承担同一个职责：
 
@@ -450,7 +446,7 @@ RegisterAccountRequest
 
 Request 负责 HTTP 参数，Command 表达注册意图，Account 维护业务规则，PO 对应数据库，Response 控制可以返回给客户端的字段。这样类确实会比传统 CRUD 多，但可以避免数据库结构、密码哈希和 MyBatis 类型一路泄漏到 Controller。
 
-### 4.6 为什么项目选择这套结构
+### 为什么项目选择这套结构
 
 这套结构不是所有功能都必须照搬。它的优势主要出现在业务复杂以后：
 
@@ -472,7 +468,7 @@ Request 负责 HTTP 参数，Command 表达注册意图，Account 维护业务�
 
 对于 NexusAI，后面还有验证码、Token 轮换、多设备会话、好友状态、消息幂等和离线同步，只用一个不断膨胀的 `ServiceImpl` 会越来越难维护。因此核心业务继续采用当前结构，但不为了形式给每个 Service 强制创建接口，也不提前创建没有代码的空层。
 
-#### 面试提问
+### 面试提问
 
 > NexusAI 采用按业务分包的轻量 DDD 分层架构，并结合六边形架构的端口与适配器思想。接口层处理 HTTP 协议，应用层编排注册、登录等用例，领域层维护账号、会话和消息的业务状态与规则，基础设施层实现 MyBatis、Redis、Kafka 等技术能力。领域层通过 Repository 等端口声明持久化需求，由基础设施适配器实现，避免 MyBatis PO 和 Wrapper 渗透到业务层。
 
@@ -482,7 +478,7 @@ Request 负责 HTTP 参数，Command 表达注册意图，Account 维护业务�
 
 ## ACC-03～ACC-05：账号注册闭环
 
-### 目标与业务流程
+### ACC-03：注册用例与业务流程
 
 账号注册已经形成以下调用链：
 
@@ -964,7 +960,172 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 退出、主动撤销和设备会话管理留到 `AUTH-05`；Redis、验证码和登录限流留到 `AUTH-06`；前端预刷新、401 重试、single-flight 和多标签页协调留到 `WEB-02`。
 
-### 第七阶段：API Gateway 和可信身份
+## AUTH-05：退出、撤销和多设备策略
+
+### 当前完成范围
+
+本阶段先完成“退出当前会话”这一最小闭环，接口为：
+
+```text
+POST /api/auth/logout
+```
+
+当前请求提交 Refresh Token：
+
+```json
+{
+  "refreshToken": "当前客户端持有的 Refresh Token"
+}
+```
+
+调用链为：
+
+```text
+LogoutRequest
+→ LogoutCommand
+→ LogoutService
+→ RefreshTokenHasher
+→ RefreshTokenRepository / LoginSessionRepository
+```
+
+应用服务执行：
+
+```text
+Refresh Token 原文
+→ SHA-256
+→ 普通查询 Token，只用于获得 sessionId
+→ FOR UPDATE 锁定 LoginSession
+→ FOR UPDATE 重新读取并锁定 Refresh Token
+→ 再次确认 Token.sessionId 与 Session.id 一致
+→ Session 改为 REVOKED
+→ 该 Family 所有 ACTIVE Token 改为 REVOKED
+→ USED 历史保持不变
+→ 提交事务
+→ HTTP 204 No Content
+```
+
+### 开发中确认的问题
+
+#### 1. 为什么退出接口没有强制使用 Access Token
+
+“是 HTTP 接口”不代表一定使用 Access Token。登录使用邮箱和密码，刷新使用 Refresh Token，普通业务接口使用 Access Token；退出属于凭据撤销接口，可以使用 Refresh Token 证明客户端持有当前 Session。
+
+当前 AuthService 只有 JWT 签发能力，完整 Bearer Token 解码、Filter、SecurityContext 和可信身份传播安排在 Gateway 阶段。如果现在强制使用 Access Token，会提前引入 GW-03 的认证链路，而且 Access Token 可能正好已经过期，导致客户端无法撤销仍有效的 Refresh Token。
+
+因此当前会话退出使用 Refresh Token 定位：
+
+```text
+refresh_token.session_id
+→ auth_session
+```
+
+客户端不提交 `accountId` 或 `sessionId`，避免信任可篡改参数。以后实现会话列表、撤销指定设备和退出其他设备时，需要用经过验证的 Access Token 得到可信 `accountId`，再校验目标 Session 的所有权。
+
+#### 2. 为什么退出也保持 Session→Token 锁顺序
+
+刷新和退出可能同时操作同一个 Family。如果刷新先创建后继 Token、退出再获得 Session 锁，退出会撤销新 Token；如果退出先获得锁，刷新随后会看到 Session 已撤销并失败。统一锁顺序可以避免两个流程互相穿插，并降低未来因反向加锁形成死锁的风险。
+
+第一次 `findByHash` 仍然只是定位 Session，不能作为最终状态依据。锁住 Session 后必须重新执行 `findByHashForUpdate`，并确认 Token 仍属于已锁定的 Session。
+
+#### 3. R1 轮换后还能否用来结束 R2 所在会话
+
+可以，而且这是当前严格复用策略的有意行为。A1 过期后使用 R1 正常轮换，会得到：
+
+```text
+R1：USED
+R2：ACTIVE
+Session：ACTIVE
+```
+
+R1 此时不是超过 `expires_at`，只是已经被消费。再次向刷新或退出接口提交 R1，都表示旧凭据再次出现，因此会撤销整个 Family，包括仍然有效的 R2。正常客户端必须在轮换成功后原子地用 R2 替换本地 R1，并通过 single-flight 避免并发请求继续提交旧值。
+
+真正的时间过期是：
+
+```text
+now >= refreshToken.expiresAt
+```
+
+当前每个后继 Token 都继承 `session.expiresAt`，所以真正时间过期的 Refresh Token 所属 Session 也已经自然失效，不会额外终止一个仍在有效期内的 Session。
+
+#### 4. 为什么退出返回 204，并对未知 Token 幂等
+
+退出的目标是让凭据不能继续使用。如果 Token 不存在、记录已被清理或者 Session 已撤销，这个目标已经满足。统一返回：
+
+```text
+204 No Content
+```
+
+可以支持重复点击和网络重试，同时不向调用方泄露某个 Token 是否曾经存在。退出路径正常结束事务，因此不需要 AUTH-04 重用异常使用的 `noRollbackFor`；数据库更新发生异常时应该整体回滚。
+
+#### 5. 为什么只把 ACTIVE Token 改为 REVOKED
+
+退出时使用批量更新撤销 Family 中的 `ACTIVE` Token，但保留旧 Token 的 `USED` 状态：
+
+```text
+R1 USED
+R2 USED
+R3 REVOKED
+Session REVOKED
+```
+
+这样可以继续看出真实轮换链和旧 Token 的历史用途，而不是把全部证据覆盖成同一种状态。
+
+#### 6. 退出后 Access Token 是否立即失效
+
+不会。当前 Access Token 是 15 分钟无状态 JWT，资源服务只验证签名和 `exp` 时，数据库中的 Session 撤销不会主动改变已经签发的 JWT。
+
+当前语义是：
+
+```text
+退出后立即禁止继续刷新
+已有 Access Token 最多继续有效约 15 分钟
+```
+
+如果将来要求立即失效，需要 Gateway 每次检查 Session 状态，或者维护短期 JTI/Session denylist。这样会让 Access Token 验证重新依赖服务端状态，需要在安全性、性能和可用性之间重新取舍。
+
+#### 7. Logout、Login 和 Refresh 是否需要马上拆子包
+
+当前 `authentication/application` 只有登录、轮换和退出三个紧密相关的用例，类名前缀已经能够区分职责，因此不为了目录形式提前建立只有两三个类的 `login/logout/refresh` 子包。它们是围绕 `LoginSession` 的并列用例，而不是把 Logout 放到 Login 下面。
+
+等后续出现：
+
+```text
+ListLoginSessionsService
+RevokeLoginSessionService
+LogoutOtherSessionsService
+LogoutAllSessionsService
+```
+
+再评估按 `login/token/session` 拆分 application 包和 Controller。领域模型与持久化适配器仍按 Session、RefreshToken 的职责组织。
+
+### 当前验证与剩余工作
+
+执行：
+
+```bash
+env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify
+```
+
+结果：
+
+```text
+Flyway V1/V2/V3 执行成功
+Tests run: 9
+Failures: 0
+Errors: 0
+BUILD SUCCESS
+```
+
+现有测试仍未直接覆盖退出行为，因此 AUTH-05 保持 `DOING`。下一步需要验证：
+
+1. ACTIVE Token 退出后 Session 和当前 Token 都变为 `REVOKED`。
+2. 重复退出仍返回 204，并且数据库状态不重复变化。
+3. 使用 `USED` R1 退出会撤销当前 R2，符合严格复用策略。
+4. 刷新和退出并发时最终状态一致，不遗留 ACTIVE Token。
+5. 撤销 Session A 不影响同账号的 Session B。
+6. 再实现会话列表、指定设备撤销、退出其他设备和退出全部设备。
+
+## GW-01～GW-05：API Gateway 和可信身份
 
 - 创建响应式 Gateway，并把请求路由到 AuthService。
 - 在 Gateway 验证 Token，处理白名单和统一认证失败响应。
@@ -974,7 +1135,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：下游服务只信任经过验证的身份，不能通过修改 `userId` 或 Header 越权。
 
-### 第八阶段：用户资料、好友和群组
+## SOC-01～SOC-08：用户资料、好友和群组
 
 - 将认证账号和用户资料分开建模。
 - 实现资料查询和修改。
@@ -986,7 +1147,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：用户关系和群成员操作具备明确状态、权限和并发约束。
 
-### 第九阶段：先用 HTTP 完成会话和消息核心
+## MSG-01～MSG-07：先用 HTTP 完成会话和消息核心
 
 - 设计私聊、群聊、会话成员和消息表。
 - 为每个会话分配单调递增的消息序号 `seq`。
@@ -998,7 +1159,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：即使没有实时连接，消息也能被可靠保存、去重并按稳定顺序查询。
 
-### 第十阶段：Outbox 和 Kafka 可靠事件
+## EVT-01～EVT-08：Outbox 和 Kafka 可靠事件
 
 - 增加 Outbox 表，让消息和待发布事件在同一数据库事务中写入。
 - 实现 Outbox Publisher 的扫描、并发抢占、发布和重试。
@@ -1010,7 +1171,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：数据库或 Kafka 短暂故障不会让已经保存的消息永久丢失事件。
 
-### 第十一阶段：Netty WebSocket 实时通信
+## RT-01～RT-09：Netty WebSocket 实时通信
 
 - 创建独立 Realtime Gateway。
 - 实现 WebSocket 握手认证和 Channel 身份绑定。
@@ -1023,7 +1184,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：单节点下可以安全连接、发送消息、接收 ACK，并在断线后恢复。
 
-### 第十二阶段：多节点路由、离线同步和缓存
+## DIST/SYNC/CACHE：多节点路由、离线同步和缓存
 
 - 使用 Redis 保存用户、设备和实时节点的 Presence，并设置 TTL。
 - 根据连接所在节点定向投递消息，而不是随机让某个节点消费。
@@ -1036,7 +1197,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：多节点和多设备场景下，消息可以定位到正确连接，重连后能够补齐而不依赖客户端时间。
 
-### 第十三阶段：文件与 MinIO
+## FILE-01～FILE-06：文件与 MinIO
 
 - 设计文件元数据、所有权和 `PENDING/READY` 状态。
 - 使用预签名 URL 让客户端直传 MinIO。
@@ -1047,7 +1208,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：文件上传不经过业务服务中转大流量，并且不能通过对象地址绕过权限下载。
 
-### 第十四阶段：AI Chat
+## AI-01～AI-09：AI Chat
 
 - 创建 AI Service 和模型提供商适配器。
 - 实现同步和流式对话，以及取消、超时和限流。
@@ -1059,7 +1220,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：AI 对话可以流式输出、保存历史，并且工具调用不会绕过服务端授权。
 
-### 第十五阶段：RAG 知识库
+## RAG-01～RAG-09：RAG 知识库
 
 - 设计知识库、文档、Chunk 和摄取任务模型。
 - 使用 MinIO 保存原始文档，并异步解析 PDF 和文本。
@@ -1072,7 +1233,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：用户只能检索有权限的文档，回答能够返回引用，并且知识库可以安全更新和重建。
 
-### 第十六阶段：React Web 和完整用户流程
+## WEB-01～WEB-10：React Web 和完整用户流程
 
 - 创建 React、TypeScript 和 Vite 工程。
 - 完成注册、登录、Token 刷新和退出页面。
@@ -1084,7 +1245,7 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 完成标志：可以从浏览器完整走通注册、社交、聊天、文件、AI 和知识库流程。
 
-### 第十七阶段：上线准备和项目交付
+## OPS/JOB：上线准备和项目交付
 
 - 完善 Actuator、指标、结构化日志和链路追踪。
 - 增加限流、超时、熔断、降级和优雅关闭。
@@ -1096,54 +1257,3 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 - 根据实际测试数据整理简历项目描述和面试复盘。
 
 完成标志：项目能够从空环境部署、观测、恢复并完成核心流程演示，简历中的每项描述都有代码或测试证据。
-
-## 后续记录模板
-
-后面每完成一个小阶段，我用下面这个格式继续追加。内容以实际开发为主，不为了完整而硬凑。
-
-````markdown
-## TASK-ID：模块名称
-
-> 实际记录按 `docs/development-roadmap.md` 的任务 ID 组织，例如 `AUTH-04：Refresh Token 轮换`，不再只按宽泛阶段汇总。
-
-### 目标与核心业务流程
-
-简单写清楚目标和开始前不理解的地方。
-
-### 实现
-
-- 改了哪些代码。
-- 数据或请求怎么流转。
-- 为什么选这个方案。
-
-### 遇到的问题
-
-错误现象：
-
-```text
-只保留关键错误
-```
-
-原因和处理：
-
-- 最后确认的原因。
-- 怎么验证。
-- 修改了什么。
-
-### 当前理解
-
-用自己的话解释这一阶段最重要的原理。
-
-### 验证
-
-```bash
-实际执行的命令
-```
-
-记录测试结果和还没覆盖的情况。
-
-### 下一步
-
-- 还缺什么。
-- 接下来做什么。
-````
