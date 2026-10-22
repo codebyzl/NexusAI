@@ -3,6 +3,9 @@ package io.github.codebyzl.nexus.auth.authentication.interfaces.rest;
 import io.github.codebyzl.nexus.auth.authentication.application.LoginWithPasswordCommand;
 import io.github.codebyzl.nexus.auth.authentication.application.LoginWithPasswordResult;
 import io.github.codebyzl.nexus.auth.authentication.application.LoginWithPasswordService;
+import io.github.codebyzl.nexus.auth.authentication.application.RotateRefreshTokenCommand;
+import io.github.codebyzl.nexus.auth.authentication.application.RotateRefreshTokenResult;
+import io.github.codebyzl.nexus.auth.authentication.application.RotateRefreshTokenService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final LoginWithPasswordService loginWithPasswordService;
+    private final RotateRefreshTokenService rotateRefreshTokenService;
 
     @PostMapping("/login")
     public LoginWithPasswordResponse login(@Valid @RequestBody LoginWithPasswordRequest request) {
@@ -31,6 +35,29 @@ public class AuthController {
         return new LoginWithPasswordResponse(
                 result.accountId(),
                 result.email(),
+                result.accessToken(),
+                "Bearer",
+                result.accessTokenExpiresAt(),
+                result.refreshToken(),
+                result.refreshTokenExpiresAt()
+        );
+    }
+
+    @PostMapping("/token/refresh")
+    public RotateRefreshTokenResponse refresh(
+            @Valid
+            @RequestBody
+            RotateRefreshTokenRequest request
+    ) {
+        RotateRefreshTokenCommand command =
+                new RotateRefreshTokenCommand(
+                        request.refreshToken()
+                );
+
+        RotateRefreshTokenResult result =
+                rotateRefreshTokenService.rotate(command);
+
+        return new RotateRefreshTokenResponse(
                 result.accessToken(),
                 "Bearer",
                 result.accessTokenExpiresAt(),

@@ -40,7 +40,7 @@
 | AUTH-01 | 账号密码登录 | 认证与授权、统一失败信息、防账号枚举 | VERIFY |
 | AUTH-02 | Access Token | JWT 结构、签名、过期、Claims、对称/非对称密钥 | VERIFY |
 | AUTH-03 | 登录会话与 Refresh Token | Stateful/Stateless、Token 哈希、设备会话 | VERIFY |
-| AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | DOING |
+| AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | VERIFY |
 | AUTH-05 | 退出、撤销和多设备策略 | 撤销、过期、并发刷新、设备管理 | TODO |
 | AUTH-06 | Redis 登录状态与验证码 | TTL、Key 规范、缓存与权威数据、限流 | TODO |
 | AUTH-07 | 认证安全测试 | 重放、暴力破解、越权、并发刷新 | TODO |
@@ -193,4 +193,4 @@
 
 ## 当前任务
 
-当前任务为 `AUTH-04：Refresh Token 轮换`，状态为 `DOING`。`AUTH-03` 已完成独立登录会话、256 bit 高熵 Refresh Token、SHA-256 哈希持久化和 Access Token `sid` 关联，并通过登录接口与数据库哈希手动核对，现有 9 个自动化测试通过。当前阶段将把 Refresh Token 从“会话中的当前凭据”扩展为可追踪的一次性 Token Family，实现轮换、旧 Token 复用检测和数据库事务并发控制；退出、会话撤销与多设备管理留到 `AUTH-05`。
+当前任务为 `AUTH-04：Refresh Token 轮换`，状态为 `VERIFY`。生产代码已经完成 V3 `refresh_token` 历史表、Session 级 Token Family、`ACTIVE/USED/REVOKED` 状态、后继 Token 链、绝对会话过期时间、Session/Token 行锁、旧 Token 复用检测、事务内 Family 撤销，以及 `POST /api/auth/token/refresh`。当前 `clean verify` 可通过，Flyway V1/V2/V3 均能在全新 MySQL 8.4 容器执行，现有 9 个测试全部通过；但这些测试尚未专项覆盖正常轮换、旧 Token 重放、并发刷新、撤销提交和多 Session 隔离，因此暂不标记为 `DONE`。下一步补齐 AUTH-04 专项自动化证据并整理代码格式；主动退出、设备会话管理和更完整的撤销能力留到 `AUTH-05`，前端无感刷新与 single-flight 留到 `WEB-02`。

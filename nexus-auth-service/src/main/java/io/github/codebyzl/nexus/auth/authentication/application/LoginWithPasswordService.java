@@ -11,6 +11,8 @@ import io.github.codebyzl.nexus.auth.application.security.token.RefreshTokenIssu
 import io.github.codebyzl.nexus.auth.authentication.application.exception.InvalidCredentialsException;
 import io.github.codebyzl.nexus.auth.authentication.domain.LoginSession;
 import io.github.codebyzl.nexus.auth.authentication.domain.LoginSessionRepository;
+import io.github.codebyzl.nexus.auth.authentication.domain.RefreshToken;
+import io.github.codebyzl.nexus.auth.authentication.domain.RefreshTokenRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +33,7 @@ public class LoginWithPasswordService {
     private final AccessTokenIssuer accessTokenIssuer;
     private final RefreshTokenIssuer refreshTokenIssuer;
     private final LoginSessionRepository loginSessionRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
 
     @Transactional
     public LoginWithPasswordResult login(LoginWithPasswordCommand command) {
@@ -48,16 +51,26 @@ public class LoginWithPasswordService {
             throw new InvalidCredentialsException();
         }
 
-        IssuedRefreshToken refreshToken = refreshTokenIssuer.issue();
+        IssuedRefreshToken issuedRefreshToken = refreshTokenIssuer.issue();
+        Instant now = Instant.now();
 
         LoginSession session = LoginSession.create(
                 account.getId(),
-                refreshToken.hash(),
-                Instant.now(),
-                refreshToken.expiresAt()
+                now,
+                issuedRefreshToken.expiresAt()
         );
 
         LoginSession savedSession = loginSessionRepository.save(session);
+
+        RefreshToken refreshTokenRecord =
+                RefreshToken.create(
+                        savedSession.getId(),
+                        issuedRefreshToken.hash(),
+                        now,
+                        issuedRefreshToken.expiresAt()
+                );
+
+        refreshTokenRepository.insert(refreshTokenRecord);
 
         IssuedAccessToken accessToken = accessTokenIssuer.issue(
                 account.getId(),
@@ -69,8 +82,8 @@ public class LoginWithPasswordService {
                 account.getEmail().value(),
                 accessToken.value(),
                 accessToken.expiresAt(),
-                refreshToken.value(),
-                refreshToken.expiresAt()
+                issuedRefreshToken.value(),
+                issuedRefreshToken.expiresAt()
         );
     }
 }

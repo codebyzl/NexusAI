@@ -727,37 +727,242 @@ BUILD SUCCESS
 
 ## AUTH-04：Refresh Token 轮换
 
-### 目标
+### 目标与最终业务流程
 
-让客户端在 Access Token 过期后，可以使用 Refresh Token 获得新的 Token，并且每个 Refresh Token 只能使用一次。
-
-### 核心业务流程
+目标是让客户端在 Access Token 过期或即将过期时，用 Refresh Token 换取新的 Token 对，并保证一个 Refresh Token 最多完成一次正常轮换。
 
 ```text
-客户端提交 Refresh Token
-→ 计算 SHA-256 Hash
-→ 查询对应 Token/Session
-→ 检查会话状态和过期时间
-→ 将旧 Refresh Token 标记为已使用
-→ 生成新的 Refresh Token
-→ 签发新的 Access Token
-→ 返回新 Token 对
+客户端提交 Refresh Token R1 原文
+→ SHA-256 得到 Hash
+→ 普通查询 R1，获得 sessionId
+→ FOR UPDATE 锁定 LoginSession
+→ FOR UPDATE 重新读取并锁定 R1
+→ 检查 Session、账号、Token 状态和过期时间
+→ 创建后继 Refresh Token R2
+→ R1 标记为 USED，并记录 replacedByTokenId=R2.id
+→ 独立签发新的 Access Token A2
+→ 返回 A2 + R2
 ```
 
-### 当前设计重点
+Access Token A2 不是由 R1 在密码学上推导出来的。R1 只用于证明客户端仍持有某个有效 Session 的长期凭据；服务端通过 R1 的数据库记录得到 `sessionId/accountId`，随后由 JWT 签发器独立生成 A2，由随机数签发器独立生成 R2。
 
-当前 Session 只保存一个 Refresh Token 哈希，覆盖旧 Hash 无法区分普通无效 Token 和已被重放的旧 Token。AUTH-04 将增加可追踪的 Token Family：
+接口为：
 
 ```text
-一次性 Refresh Token
-→ 使用后标记 USED
-→ 签发后继 Token
-→ 记录 replacedBy
-→ 旧 Token 再次出现时撤销整个 Session
-→ 使用数据库行锁保证并发刷新最多成功一次
+POST /api/auth/token/refresh
 ```
 
-Refresh Token 采用绝对会话过期时间，轮换不会无限延长登录期限。退出、主动撤销与多设备管理留到 `AUTH-05`；Redis、验证码和登录限流留到 `AUTH-06`，不在轮换阶段提前引入。
+请求只需要 Refresh Token。普通业务请求只携带 Access Token；前端所谓“无感刷新”仍然是前端拦截器在后台自动调用刷新接口，不是服务端定时查询数据库并主动把 Token 推给浏览器。
+
+### 数据模型与迁移
+
+V3 新增 `refresh_token` 历史表，并把 V2 `auth_session.refresh_token_hash` 中的存量数据迁移进去，然后删除 Session 上的单值 Hash 字段。新表保存：
+
+```text
+id
+session_id              同时作为 Token Family ID
+token_hash              SHA-256，唯一索引
+status                  ACTIVE / USED / REVOKED
+created_at / expires_at
+used_at / revoked_at
+replaced_by_token_id    后继 Token
+```
+
+保存完整历史而不是覆盖当前 Hash，是因为覆盖后只能知道“提交的 Token 不等于当前 Token”，无法区分随机无效输入和曾经有效但已经被使用的旧 Token。保留 `USED` 记录后，旧 Token 再次出现就能触发复用检测。
+
+当前实现增加：
+
+```text
+RefreshToken
+RefreshTokenStatus
+RefreshTokenRepository
+RefreshTokenPo
+RefreshTokenMapper
+RefreshTokenPersistenceConverter
+MyBatisRefreshTokenRepository
+RefreshTokenHasher
+Sha256RefreshTokenHasher
+RotateRefreshTokenService
+RotateRefreshTokenCommand / Result
+RotateRefreshTokenRequest / Response
+```
+
+首次登录现在同时写入 `auth_session` 和首个 `refresh_token` 记录，数据库只保存 Hash，原文仍只返回给客户端。
+
+### 开发中遇到的问题与设计取舍
+
+#### 1. 为什么轮换签发器需要 `issue(Instant expiresAt)`
+
+首次登录调用：
+
+```java
+refreshTokenIssuer.issue();
+```
+
+内部使用“当前时间 + 7 天”。如果每次轮换都重新这样计算，会让新 Token 的过期时间不断向后移动。当前选择 7 天绝对会话期限，因此轮换调用：
+
+```java
+refreshTokenIssuer.issue(session.getExpiresAt());
+```
+
+例如 10 月 1 日登录、10 月 8 日会话过期，即使 10 月 5 日轮换，新 Token 仍在 10 月 8 日过期。这样 Refresh Token 和 Session 不会出现“Token 显示还有效但 Session 已过期”的不一致。
+
+需要澄清的是，Refresh Token 是不透明随机字符串，过期时间没有编码在原文中，而是保存在数据库和响应元数据里。
+
+#### 2. Access Token 与 Refresh Token 到底是什么关系
+
+Access Token 是 15 分钟 HS256 JWT，Refresh Token 是 256 bit 随机字符串，两者没有密码学派生关系。刷新过程是：
+
+```text
+R1 授权一次刷新操作
+├── JwtAccessTokenIssuer → A2
+└── SecureRandomRefreshTokenIssuer → R2
+```
+
+A2 不包含 Refresh Token 原文、Hash 或 Refresh Token ID，只继续携带同一个 `accountId` 和 `sessionId`。到了 Session 绝对过期时间后不能继续刷新；当前 Access Token 仍固定签发 15 分钟，因此最后一个 Access Token 最多可能比 Session 多存活约 15 分钟。若后续要求严格截止，可以把 Access Token 的 `exp` 截断为 `min(now + 15 分钟, session.expiresAt)`。
+
+#### 3. 为什么 Token 和 Session 都要锁
+
+Token 行锁保护单个 Token 的一次性消费：
+
+```text
+两个请求同时使用 R1
+→ 第一个把 R1 改为 USED 并创建 R2
+→ 第二个等待后重新读取，不能再从 R1 创建另一个后继
+```
+
+否则可能形成分叉：
+
+```text
+     ┌→ R2
+R1 ──┤
+     └→ R3
+```
+
+Session 行锁保护整个 Token Family。正常客户端使用当前 R2 刷新时，攻击者可能同时重放已经 `USED` 的 R1；它们锁的是不同 Token 行，只有共同锁定 Session，才能让刷新、复用检测、退出和撤销在同一个 Family 内串行执行。
+
+#### 4. 为什么锁写在查询方法上
+
+数据库悲观锁通过锁定读取获得：
+
+```sql
+SELECT ... FOR UPDATE
+```
+
+轮换是“读取状态→判断→修改”的操作。如果先普通查询、等 UPDATE 时才加锁，两个事务可能都先读到 `ACTIVE` 并完成业务判断。`SELECT ... FOR UPDATE` 会读取当前记录并把行锁持有到事务提交或回滚，避免检查与使用之间状态变化。
+
+UPDATE 本身也会加锁，但 Session 在正常刷新路径中不一定会更新；仍然必须保证从检查 Session 有效到创建后继 Token 之间不能被其他事务撤销，因此 Session 需要锁定查询。
+
+#### 5. 为什么先普通查询 Token，再重新加锁查询
+
+刷新请求只有 Token 原文，开始时并不知道 `sessionId`。为了统一全系统锁顺序并降低未来刷新与退出互相死锁的风险，当前采用：
+
+```text
+普通 findByHash，只用于定位 sessionId
+→ findByIdForUpdate，先锁 Session
+→ findByHashForUpdate，重新读取并锁 Token
+```
+
+第一次查询结果不能用于最终状态判断；真正判断必须以 Session 锁定后的第二次 Token 查询为准，并再次确认 Token 的 `sessionId` 与已锁 Session 一致。
+
+Repository 中的 `requireTokenHash(tokenHash)` 只是抽取出来的空值/空字符串参数校验，不负责生成 Hash。Hash 由 `RefreshTokenHasher` 计算。
+
+#### 6. 为什么发现重用后抛异常会导致撤销失效
+
+重用分支需要：
+
+```text
+Session → REVOKED
+当前 ACTIVE Refresh Token → REVOKED
+然后向客户端返回 401
+```
+
+Spring 默认遇到运行时异常会回滚事务。如果更新完数据库后直接抛 `RefreshTokenReuseDetectedException`，撤销也会被回滚。当前应用服务使用：
+
+```java
+@Transactional(
+        noRollbackFor =
+                RefreshTokenReuseDetectedException.class
+)
+```
+
+因此重用异常仍然返回 401，但撤销事务可以提交。随机无效 Token 和已使用 Token 对外统一返回：
+
+```text
+HTTP 401
+INVALID_REFRESH_TOKEN
+```
+
+内部使用不同异常类型，只为控制事务和后续审计，不向客户端泄露 Token 是否曾经有效。
+
+#### 7. 正常并发为什么也可能触发严格重用检测
+
+同一个 Access Token 可以被多个普通业务请求并发使用。但当它过期后，如果三个请求各自收到 401 并独立提交同一个 R1，就会产生三个刷新请求。数据库锁保证只有一个请求能正常消费 R1；严格模式下，后续请求读到 `USED` 会撤销整个 Session。
+
+因此当前安全策略要求前端在 `WEB-02` 实现 single-flight：
+
+```text
+多个业务请求发现 Access Token 过期
+→ 只创建一个共享 refreshPromise
+→ 其他请求等待同一个刷新结果
+→ 获得 A2 后分别重试原业务请求
+```
+
+这不是说普通并发请求不允许，而是同一个一次性 Refresh Token 不能并发成功。多设备使用独立 Session 和独立 Refresh Token，不会锁同一行。严格模式安全边界清晰，但对网络重试、多标签页和丢失刷新响应更敏感；如果以后用户体验需要，可以评估短宽限窗口或 BFF，但当前不提前增加复杂度。
+
+#### 8. 后继 Token 为什么先 INSERT，再更新旧 Token
+
+`refresh_token.replaced_by_token_id` 外键指向同表的后继记录。必须先插入 R2，再把 R1 的 `replaced_by_token_id` 更新为 R2.id；反过来会违反外键约束。两个操作与 Access Token 签发都位于同一应用事务内，后续步骤失败时数据库变更回滚，未返回客户端的随机 Token 原文直接废弃。
+
+### 当前实现状态
+
+已经完成：
+
+```text
+V3 refresh_token 迁移和旧数据迁移
+Refresh Token 历史领域模型与持久化适配器
+首次登录创建首个 Token 记录
+指定 Session 绝对过期时间的签发
+Session 与 Token 锁定查询
+统一 Session→Token 锁顺序
+正常轮换和后继链
+旧 Token 复用检测
+Session 与 ACTIVE Token 撤销
+POST /api/auth/token/refresh
+```
+
+### 验证
+
+执行：
+
+```bash
+env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify
+```
+
+结果：
+
+```text
+Flyway V1/V2/V3 执行成功
+Tests run: 9
+Failures: 0
+Errors: 0
+BUILD SUCCESS
+```
+
+这证明当前代码可以编译、打包，V3 可以在全新 MySQL 8.4 容器执行，但现有 9 个测试仍是账号和数据库基线测试，不能证明 AUTH-04 的并发与撤销语义。
+
+### 尚未完成的验证
+
+AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
+
+1. 正常 R1→R2 轮换，验证 R1=`USED`、R2=`ACTIVE` 和 `replaced_by_token_id`。
+2. 连续 R1→R2→R3，验证所有 Token 都继承同一个 Session 绝对过期时间。
+3. 再次提交 R1，验证返回 401，并确认 Session 与当前 R3 的撤销没有因异常回滚。
+4. 两个请求并发使用 R1，验证最多一个请求进入正常轮换分支。
+5. 两个独立 Session 中，一个 Family 被重放时不影响另一个 Session。
+6. 整理新增 Java 文件的行首缩进和显式 import，再进行代码审核。
+
+退出、主动撤销和设备会话管理留到 `AUTH-05`；Redis、验证码和登录限流留到 `AUTH-06`；前端预刷新、401 重试、single-flight 和多标签页协调留到 `WEB-02`。
 
 ### 第七阶段：API Gateway 和可信身份
 

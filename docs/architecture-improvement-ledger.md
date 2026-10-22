@@ -53,7 +53,7 @@
 | ACC-04 | 固定盐加 MD5 保存密码 | 抗暴力破解能力不足 | 通过应用层 `PasswordHasher` 端口隔离密码能力，基础设施使用 Spring Security `DelegatingPasswordEncoder`，当前默认生成带算法标识的 bcrypt 哈希并支持后续算法升级 | 注册后数据库无明文密码；密码登录接口手动验证成功；现有构建测试通过 | 已验证（密码哈希与匹配链路已落地） |
 | AUTH-02 | JWT 密钥存在源码配置；Access Token 写入 Redis | 密钥泄漏；Access Token 被迫依赖服务端状态；按 userId 保存不适合多设备 | JWT 密钥通过环境变量注入并校验 Base64/256 bit；Access Token 使用包含 `sid` 的 15 分钟无状态 JWT | 无外部密钥执行 `clean verify`；登录接口解析 Claims 与 TTL | 已验证（签发链路已落地，专项自动化测试待补） |
 | AUTH-03 | Refresh Token 使用 JWT 原文并按 userId 单值存入 Redis | 原文泄漏后可直接使用；新设备登录覆盖旧设备；无法独立撤销某个会话 | 每次登录创建 UUID Session；Refresh Token 使用 256 bit 随机值，数据库只保存 SHA-256；Access Token 通过 `sid` 关联会话 | 登录接口与 `auth_session` 哈希手动核对；Flyway V2 和现有测试通过 | 已验证（专项自动化测试待补） |
-| AUTH-04 | 刷新时直接覆盖 Redis 中的 Refresh Token，没有历史状态和 Token Family | 无法区分普通无效 Token 与旧 Token 重放；并发刷新缺少可靠的一次性消费约束 | 保存 Refresh Token 历史状态，轮换时标记 `USED` 并创建后继 Token；重用旧 Token 时撤销整个 Session；事务内使用行锁串行化消费 | 正常轮换、旧 Token 重放、双请求并发刷新和跨 Session 隔离测试 | 实现中 |
+| AUTH-04 | 刷新时直接覆盖 Redis 中的 Refresh Token，没有历史状态和 Token Family | 无法区分普通无效 Token 与旧 Token 重放；并发刷新缺少可靠的一次性消费约束 | 保存 Refresh Token 历史状态，轮换时标记 `USED` 并创建后继 Token；重用旧 Token 时撤销整个 Session；事务内按 Session→Token 顺序使用行锁串行化消费 | 正常轮换、旧 Token 重放、双请求并发刷新和跨 Session 隔离测试 | 待验证（生产链路已实现，专项自动化测试待补） |
 
 ## 5. 消息可靠性与实时通信
 
@@ -92,7 +92,7 @@
 | ID | InfiniteChat 当前实现 | 常见问题 | NexusAI 改进 | 验证方式 | 状态 |
 |---|---|---|---|---|---|
 | ENG-01 | 依赖全量 `schema.sql`，脚本包含 DROP/CREATE | 无迁移历史，升级可能破坏数据 | 从第一天使用 Flyway，迁移只前进并经过回滚评估 | 空库和旧版本升级测试 | 已验证（V1 account 迁移入库；历史与校验和已记录；重复启动不重复执行） |
-| ENG-02 | Java 测试主要是 `contextLoads()`；前端 E2E 契约与后端实现漂移 | 构建成功不能证明业务正确 | 单元、集成、契约、权限、并发和故障测试分层建设 | CI 质量门 | 部分验证（Testcontainers + MySQL 8.4 已建立数据库集成测试基线；Flyway V1/V2 和 9 个测试进入构建验收；注册、登录与 Token 专项自动化测试仍待补充） |
+| ENG-02 | Java 测试主要是 `contextLoads()`；前端 E2E 契约与后端实现漂移 | 构建成功不能证明业务正确 | 单元、集成、契约、权限、并发和故障测试分层建设 | CI 质量门 | 部分验证（Testcontainers + MySQL 8.4 已建立数据库集成测试基线；Flyway V1/V2/V3 和 9 个测试进入构建验收；注册、登录与 Token 专项自动化测试仍待补充） |
 | ENG-03 | 监控主要集中在 AI 服务，且部分指标使用用户/会话等高基数标签 | 其他链路不可观测；指标系统可能被高基数拖垮 | 全链路低基数指标、结构化日志、Trace、SLO 和告警 | 压测观察；指标基数检查 | 待设计 |
 | ENG-04 | README、数据库表和集成测试描述不一致 | 文档不能代表真实系统 | API、事件和迁移作为可验证契约；文档纳入评审和 CI | 文档/契约一致性检查 | 待设计 |
 | ENG-05 | 基础设施需要手工创建 8 个容器，仓库没有 Compose 清单 | 环境难以复现，容器版本、端口、网络和启动条件容易因人而异 | 通过版本化 Compose 分阶段编排基础设施，声明持久卷、健康检查、网络和环境变量契约 | `docker compose config`；容器健康检查；数据持久化重启测试 | 已验证（MySQL 8.4 healthy；业务账号连接成功；容器重建后探针数据保留） |
@@ -144,11 +144,31 @@
 
 改进证据：每次登录创建独立 UUID Session；Refresh Token 使用 32 字节 `SecureRandom`，数据库只保存 SHA-256；Access Token 通过 `sid` 关联 Session。登录接口已手动验证，数据库哈希与客户端原文重新计算结果一致；Flyway V1/V2 和现有 9 个测试通过。
 
-当前残余风险：还没有自动化覆盖 Token Claims、Session 写入、并发登录和重放；一个 Session 当前只保存一个 Refresh Token Hash，轮换历史与 Token Family 将在 `AUTH-04` 完成。
+当前残余风险：还没有自动化覆盖 Token Claims、Session 写入和并发登录。原先由 `auth_session` 保存单个 Refresh Token Hash 的设计已经在 AUTH-04 迁移为独立历史表，旧结构不再保留。
+
+### AUTH-04：Refresh Token 轮换与复用检测
+
+实现位置：
+
+- `db/migration/V3__create_refresh_token_table.sql`
+- `auth/authentication/domain/RefreshToken.java`
+- `auth/authentication/domain/RefreshTokenRepository.java`
+- `auth/authentication/application/RotateRefreshTokenService.java`
+- `auth/authentication/infrastructure/persistence/MyBatisRefreshTokenRepository.java`
+- `auth/authentication/infrastructure/persistence/RefreshTokenMapper.java`
+- `auth/authentication/interfaces/rest/AuthController.java`
+
+实现证据：V3 将 Refresh Token 从 Session 单值字段迁移为完整历史表，记录 `ACTIVE/USED/REVOKED`、`used_at/revoked_at` 和 `replaced_by_token_id`。轮换时先通过普通 Hash 查询定位 Family，再按 Session→Token 的统一顺序执行 `SELECT ... FOR UPDATE`；同一个 Token 最多产生一个后继 Token，不同 Token 上的刷新、重放检测和会话撤销也通过 Session 锁串行化。后继 Refresh Token 继承 Session 的绝对过期时间，不因轮换形成无限滑动续期。
+
+重用检测采用严格模式：已经标记为 `USED` 的 Token 再次出现时，撤销所属 Session 和该 Family 当前所有 `ACTIVE` Token。应用服务使用 `@Transactional(noRollbackFor = RefreshTokenReuseDetectedException.class)`，确保对外返回 401 时撤销记录仍然提交。普通无效 Token 与已使用 Token 对外都返回 `INVALID_REFRESH_TOKEN`，避免泄露 Token 历史状态。
+
+当前验证：`env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify` 成功，Flyway V1/V2/V3 在全新 MySQL 8.4 容器执行成功，现有 9 个测试全部通过。残余验证缺口是正常 R1→R2 轮换、R1 重放后的撤销提交、同一 R1 并发刷新和不同 Session 隔离测试，因此状态为“待验证”而非“已验证”。
+
+代价与边界：数据库需要保存 Token 历史并定期清理；严格复用检测要求客户端实现 single-flight，否则同一 R1 的正常并发刷新也可能撤销会话；Access Token 当前固定 15 分钟，若在 Session 即将过期时签发，最多可能比 Session 多存活约 15 分钟，是否将 Access Token `exp` 截断到 Session 绝对过期时间留待后续安全策略确认。
 
 ### 当前认证阶段一分钟项目表达
 
-> InfiniteChat 把 Access Token 和 Refresh Token 都做成 JWT 原文，并按 userId 存入 Redis，这会让 Access Token 失去无状态优势，也会造成多设备覆盖和 Refresh Token 原文泄漏风险。NexusAI 将两类 Token 分开：Access Token 是 15 分钟无状态 JWT，Refresh Token 是 256 bit 高熵随机凭据；每次登录建立独立 Session，数据库只保存 Refresh Token 的 SHA-256，JWT 通过 `sid` 关联会话。密码从固定盐 MD5 改为 Spring Security 的可升级密码编码器，JWT 密钥通过环境变量注入。当前签发、登录和会话持久化链路已经走通，下一步实现 Refresh Token 轮换、Token Family 和旧 Token 复用检测。
+> InfiniteChat 把 Access Token 和 Refresh Token 都做成 JWT 原文，并按 userId 存入 Redis，这会让 Access Token 失去无状态优势，也会造成多设备覆盖和 Refresh Token 原文泄漏风险。NexusAI 将两类 Token 分开：Access Token 是 15 分钟无状态 JWT，Refresh Token 是 256 bit 高熵随机凭据；每次登录建立独立 Session，数据库只保存 Refresh Token 的 SHA-256，JWT 通过 `sid` 关联会话。Refresh Token 使用独立历史表形成 Token Family，轮换后旧 Token 标记为 `USED` 并关联后继 Token；旧 Token 再次出现时撤销整个 Session。并发控制采用 Session 与 Token 行锁，轮换后的 Token 继承会话绝对过期时间。当前生产链路和构建已经走通，下一步用正常轮换、重放、并发和多 Session 隔离测试补齐验证证据。
 
 高频追问：
 

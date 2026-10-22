@@ -12,7 +12,6 @@ public class LoginSession {
     private final UUID id;
     private final Long accountId;
 
-    private String refreshTokenHash;
     private LoginSessionStatus status;
 
     private final Instant createdAt;
@@ -23,7 +22,6 @@ public class LoginSession {
     private LoginSession(
             UUID id,
             Long accountId,
-            String refreshTokenHash,
             LoginSessionStatus status,
             Instant createdAt,
             Instant updatedAt,
@@ -32,7 +30,6 @@ public class LoginSession {
     ) {
         this.id = Objects.requireNonNull(id);
         this.accountId = Objects.requireNonNull(accountId);
-        this.refreshTokenHash = Objects.requireNonNull(refreshTokenHash);
         this.status = Objects.requireNonNull(status);
         this.createdAt = Objects.requireNonNull(createdAt);
         this.updatedAt = Objects.requireNonNull(updatedAt);
@@ -43,7 +40,6 @@ public class LoginSession {
     // 创建新登录会话
     public static LoginSession create(
             Long accountId,
-            String refreshTokenHash,
             Instant now,
             Instant expiresAt
     ) {
@@ -56,16 +52,9 @@ public class LoginSession {
             );
         }
 
-        if (refreshTokenHash == null || refreshTokenHash.isBlank()) {
-            throw new IllegalArgumentException(
-                    "Refresh token hash must not be blank"
-            );
-        }
-
         return new LoginSession(
                 UUID.randomUUID(),
                 accountId,
-                refreshTokenHash,
                 LoginSessionStatus.ACTIVE,
                 now,
                 now,
@@ -78,7 +67,6 @@ public class LoginSession {
     public static LoginSession restore(
             UUID id,
             Long accountId,
-            String refreshTokenHash,
             LoginSessionStatus status,
             Instant createdAt,
             Instant updatedAt,
@@ -88,7 +76,6 @@ public class LoginSession {
         return new LoginSession(
                 id,
                 accountId,
-                refreshTokenHash,
                 status,
                 createdAt,
                 updatedAt,

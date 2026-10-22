@@ -23,7 +23,6 @@ public class LoginSessionPo {
     @TableId(value = "id", type = IdType.INPUT)
     private String id;
     private Long accountId;
-    private String refreshTokenHash;
     private Integer status;
     private Instant createdAt;
     private Instant updatedAt;

@@ -17,7 +17,6 @@ final class LoginSessionPersistenceConverter {
 
         po.setId(session.getId().toString());
         po.setAccountId(session.getAccountId());
-        po.setRefreshTokenHash(session.getRefreshTokenHash());
         po.setStatus(session.getStatus().getCode());
         po.setCreatedAt(session.getCreatedAt());
         po.setUpdatedAt(session.getUpdatedAt());
@@ -32,7 +31,6 @@ final class LoginSessionPersistenceConverter {
         return LoginSession.restore(
                 UUID.fromString(po.getId()),
                 po.getAccountId(),
-                po.getRefreshTokenHash(),
                 LoginSessionStatus.fromCode(po.getStatus()),
                 po.getCreatedAt(),
                 po.getUpdatedAt(),
