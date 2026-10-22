@@ -4,7 +4,7 @@
 
 NexusAI 以 Java 微服务和事件驱动架构为基础，围绕用户关系、私聊群聊、可靠消息、WebSocket 实时投递、AI Chat、RAG 知识库等能力展开。项目以生产级约束为设计目标，在实现业务功能的同时，重点处理身份安全、消息幂等、顺序、一致性、断线恢复、多节点路由、可观测性与故障恢复。
 
-> 当前状态：项目处于工程基线阶段，已完成 Maven 父工程、Wrapper 和纯 Java Common 模块的依赖隔离。README 中标记为“规划”的功能将按照开发路线逐步实现，不代表当前已经可用。
+> 当前状态：工程基线和 AuthService 的账号注册、密码登录、Access/Refresh Token、轮换复用检测与当前会话退出链路已经实现，认证专项自动化验证和多设备会话管理仍在推进。README 中标记为“规划”的功能不代表当前已经可用。
 
 ## 项目目标
 
@@ -122,7 +122,7 @@ flowchart LR
 | 模块 | 职责 | 当前状态 |
 |---|---|---|
 | `nexus-common-kernel` | 极少量稳定公共类型，不包含业务 Entity 和基础设施实现 | 已创建 |
-| `nexus-auth-service` | 账号、凭据、登录会话、Token 和验证码 | 下一阶段 |
+| `nexus-auth-service` | 账号、凭据、登录会话、Token 和验证码 | 实现中 |
 | `nexus-api-gateway` | HTTP 路由、认证入口、限流和安全边界 | 规划中 |
 | `nexus-social-service` | 用户资料、好友、群组和会话成员 | 规划中 |
 | `nexus-message-service` | 消息顺序、幂等、存储、历史、读游标和 Outbox | 规划中 |
@@ -168,6 +168,7 @@ flowchart LR
 - Maven Wrapper
 - Docker Compose
 - Spring Boot Actuator
+- Springdoc OpenAPI / Swagger UI
 - Micrometer
 - Prometheus / Grafana
 - OpenTelemetry
@@ -239,6 +240,22 @@ NexusAI/
 ```
 
 当前 Common 应保持纯 Java JAR，不应出现 Spring Web、MySQL、Redis、Nacos 或 AI 相关依赖。
+
+## AuthService API 文档
+
+AuthService 启动后可以访问：
+
+```text
+OpenAPI JSON：http://localhost:8081/api/v3/api-docs
+Swagger UI：http://localhost:8081/api/swagger-ui.html
+```
+
+本地默认启用。部署到生产环境时设置：
+
+```text
+OPENAPI_ENABLED=false
+SWAGGER_UI_ENABLED=false
+```
 
 随着各服务和基础设施逐步实现，README 将补充 Docker Compose 启动、数据库迁移、服务启动和端到端验证命令。
 

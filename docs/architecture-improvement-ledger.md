@@ -95,8 +95,22 @@
 | ENG-01 | 依赖全量 `schema.sql`，脚本包含 DROP/CREATE | 无迁移历史，升级可能破坏数据 | 从第一天使用 Flyway，迁移只前进并经过回滚评估 | 空库和旧版本升级测试 | 已验证（V1 account 迁移入库；历史与校验和已记录；重复启动不重复执行） |
 | ENG-02 | Java 测试主要是 `contextLoads()`；前端 E2E 契约与后端实现漂移 | 构建成功不能证明业务正确 | 单元、集成、契约、权限、并发和故障测试分层建设 | CI 质量门 | 部分验证（Testcontainers + MySQL 8.4 已建立数据库集成测试基线；Flyway V1/V2/V3 和 9 个测试进入构建验收；注册、登录与 Token 专项自动化测试仍待补充） |
 | ENG-03 | 监控主要集中在 AI 服务，且部分指标使用用户/会话等高基数标签 | 其他链路不可观测；指标系统可能被高基数拖垮 | 全链路低基数指标、结构化日志、Trace、SLO 和告警 | 压测观察；指标基数检查 | 待设计 |
-| ENG-04 | README、数据库表和集成测试描述不一致 | 文档不能代表真实系统 | API、事件和迁移作为可验证契约；文档纳入评审和 CI | 文档/契约一致性检查 | 待设计 |
+| ENG-04 | README、数据库表和集成测试描述不一致 | 文档不能代表真实系统 | 使用 Springdoc OpenAPI 从 Controller、DTO 和校验注解生成当前 HTTP 契约；统一记录成功/错误响应和 Bearer JWT 安全定义，文档纳入评审和 CI | `/v3/api-docs` 路径/Schema 检查；Swagger UI 启动验证；文档/契约一致性检查 | 部分验证（账号与认证接口已生成 OpenAPI，事件契约和 CI 检查待补） |
 | ENG-05 | 基础设施需要手工创建 8 个容器，仓库没有 Compose 清单 | 环境难以复现，容器版本、端口、网络和启动条件容易因人而异 | 通过版本化 Compose 分阶段编排基础设施，声明持久卷、健康检查、网络和环境变量契约 | `docker compose config`；容器健康检查；数据持久化重启测试 | 已验证（MySQL 8.4 healthy；业务账号连接成功；容器重建后探针数据保留） |
+
+### FND-08：OpenAPI 与 Swagger UI
+
+实现位置：
+
+- 父 POM 中的 `springdoc-openapi.version` 和依赖管理
+- `nexus-auth-service/pom.xml`
+- `auth/infrastructure/openapi/OpenApiConfig.java`
+- 账号与认证 Controller、Request、Response 和 `ApiErrorResponse`
+- `application.yml` 中的 `springdoc` 配置
+
+实现证据：项目使用适配 Spring Boot 3.5 的 Springdoc OpenAPI 2.9.0，通过 Controller 和 Record DTO 自动生成 OpenAPI 3 契约；当前文档覆盖账号注册、密码登录、Token 轮换和当前会话退出，包含参数校验、成功状态码、统一错误响应 Schema，以及为后续受保护接口预定义的 `bearerAuth` JWT 安全方案。OpenAPI 和 Swagger UI 可以分别通过环境变量关闭，生产环境不需要暴露交互式文档。
+
+验证结果：完整 `clean verify` 成功；本地启动后 `/api/v3/api-docs` 和 `/api/swagger-ui.html` 均返回 HTTP 200，生成的路径为 `/accounts`、`/auth/login`、`/auth/token/refresh`、`/auth/logout`，安全定义包含 `bearerAuth`；设置 `OPENAPI_ENABLED=false` 和 `SWAGGER_UI_ENABLED=false` 后两个地址均返回 404。当前仍缺少 CI 中的 OpenAPI 契约漂移检查，因此状态保持 `VERIFY`。
 
 ## 9. 每阶段完成后需要补充的证据
 

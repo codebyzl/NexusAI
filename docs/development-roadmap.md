@@ -22,6 +22,7 @@
 | FND-05 | Testcontainers 数据库测试基线 | 测试金字塔、真实数据库集成测试、容器生命周期 | DONE |
 | FND-06 | 分环境配置与密钥约束 | Profile、配置优先级、环境变量、Secret 管理 | TODO |
 | FND-07 | 统一日志、Trace ID 和错误响应 | Filter、MDC、异常边界、错误码 | TODO |
+| FND-08 | OpenAPI 与 Swagger UI | 接口契约、Schema、错误响应、Bearer 安全定义 | VERIFY |
 
 ## 1. 账号注册
 

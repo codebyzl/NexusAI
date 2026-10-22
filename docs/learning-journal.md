@@ -244,6 +244,80 @@ Errors: 0
 BUILD SUCCESS
 ```
 
+## FND-08：OpenAPI 与 Swagger UI
+
+### 为什么在当前阶段接入
+
+账号注册、密码登录、Token 轮换和退出已经形成四个 HTTP 接口，后面还会继续增加 Session 管理、Gateway、好友和消息接口。如果只依赖聊天记录或手写示例，接口状态码、字段和业务错误很容易与代码漂移，因此在接口数量继续增长前接入 Springdoc OpenAPI。
+
+当前使用：
+
+```text
+springdoc-openapi-starter-webmvc-ui 2.9.0
+```
+
+Spring Boot 3 使用 Springdoc 2.x；Springdoc 3.x 面向 Spring Boot 4。版本由父 POM 的 `dependencyManagement` 管理，AuthService 只声明需要该 Starter，Common 不继承 Web 文档依赖。
+
+### 当前文档范围
+
+OpenAPI 当前覆盖：
+
+```text
+POST /accounts
+POST /auth/login
+POST /auth/token/refresh
+POST /auth/logout
+```
+
+Controller 使用 `@Tag`、`@Operation` 和 `@ApiResponse` 描述接口用途、成功状态和错误状态；Request/Response Record 使用 `@Schema` 补充字段语义。密码和 Refresh Token 标记为只写字段，文档不放真实密钥或真实 Token 示例。统一错误响应使用 `ApiErrorResponse` Schema。
+
+`OpenApiConfig` 定义服务标题、版本和后续受保护接口使用的安全方案：
+
+```text
+bearerAuth
+类型：http
+scheme：bearer
+format：JWT
+```
+
+当前注册、登录、刷新和退出都不依赖 Bearer Access Token，因此只预定义安全方案，没有把它全局应用到所有接口。后续 Session 管理接口再使用 `@SecurityRequirement(name = "bearerAuth")`。
+
+### 访问地址与环境控制
+
+由于 AuthService 的 Servlet Context Path 是 `/api`，本地地址为：
+
+```text
+OpenAPI JSON：http://localhost:8081/api/v3/api-docs
+Swagger UI：http://localhost:8081/api/swagger-ui.html
+```
+
+功能可以通过环境变量分别关闭：
+
+```text
+OPENAPI_ENABLED=false
+SWAGGER_UI_ENABLED=false
+```
+
+本地开发默认启用；生产部署应该关闭或限制访问。Swagger UI 只用于契约浏览和手动调试，不能代替业务自动化测试。
+
+### 验证
+
+执行完整构建后启动本地服务，验证结果：
+
+```text
+GET /api/v3/api-docs       → HTTP 200
+GET /api/swagger-ui.html    → HTTP 200
+OpenAPI title               → NexusAI Auth Service API
+paths                       → /accounts、/auth/login、/auth/logout、/auth/token/refresh
+securitySchemes             → bearerAuth
+
+关闭两个文档开关后：
+GET /api/v3/api-docs        → HTTP 404
+GET /api/swagger-ui.html     → HTTP 404
+```
+
+当前状态保持 `VERIFY`，因为还没有把 OpenAPI 路径和 Schema 漂移检查加入 CI。
+
 ## ACC-01～ACC-02：Account 表与持久化适配器
 
 ### 接入 MyBatis-Plus
