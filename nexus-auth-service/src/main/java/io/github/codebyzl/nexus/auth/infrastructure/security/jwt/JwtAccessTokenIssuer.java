@@ -28,10 +28,10 @@ public class JwtAccessTokenIssuer implements AccessTokenIssuer {
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .issuer(properties.issuer())
                 .subject(accountId.toString())
-                .claim("sid", sessionId.toString())
                 .issuedAt(issuedAt)
                 .expiresAt(expiresAt)
                 .id(UUID.randomUUID().toString())
+                .claim("sid", sessionId.toString())
                 .claim("token_type", "access")
                 .build();
 

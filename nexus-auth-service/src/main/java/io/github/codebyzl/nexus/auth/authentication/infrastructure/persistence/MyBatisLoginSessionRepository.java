@@ -1,10 +1,12 @@
 package io.github.codebyzl.nexus.auth.authentication.infrastructure.persistence;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import io.github.codebyzl.nexus.auth.authentication.domain.LoginSession;
 import io.github.codebyzl.nexus.auth.authentication.domain.LoginSessionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -29,6 +31,26 @@ public class MyBatisLoginSessionRepository implements LoginSessionRepository {
         }
 
         return session;
+    }
+
+
+    @Override
+    public Optional<LoginSession> findById(
+            UUID sessionId
+    ) {
+        if (sessionId == null) {
+            throw new IllegalArgumentException(
+                    "Session ID must not be null"
+            );
+        }
+
+        LoginSessionPo po =
+                loginSessionMapper.selectById(
+                        sessionId.toString()
+                );
+
+        return Optional.ofNullable(po)
+                .map(LoginSessionPersistenceConverter::toDomain);
     }
 
 
@@ -64,4 +86,44 @@ public class MyBatisLoginSessionRepository implements LoginSessionRepository {
             );
         }
     }
+
+    @Override
+    public List<LoginSession> findByAccountId(Long accountId) {
+
+        List<LoginSessionPo> poList = loginSessionMapper.selectList(
+                new LambdaQueryWrapper<LoginSessionPo>()
+                        .eq(LoginSessionPo::getAccountId, accountId)
+                        .orderByDesc(LoginSessionPo::getCreatedAt)
+        );
+
+        return poList.stream()
+                .map(LoginSessionPersistenceConverter::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<LoginSession> findByAccountIdForUpdate(Long accountId) {
+
+        List<LoginSessionPo> poList = loginSessionMapper.findByAccountIdForUpdate(
+                accountId
+        );
+        return poList.stream()
+                .map(LoginSessionPersistenceConverter::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<LoginSession> findOtherActiveForUpdate(
+            Long accountId,
+            UUID currentSessionId
+    ) {
+        List<LoginSessionPo> poList = loginSessionMapper.selectOtherActiveForUpdate(
+                accountId,
+                currentSessionId.toString()
+        );
+        return poList.stream()
+                .map(LoginSessionPersistenceConverter::toDomain)
+                .toList();
+    }
+
 }

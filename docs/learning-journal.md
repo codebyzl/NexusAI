@@ -1038,62 +1038,65 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 ### 当前完成范围
 
-本阶段先完成“退出当前会话”这一最小闭环，接口为：
+本阶段已经完成当前退出、可信 Bearer 认证和多设备会话管理闭环：
 
 ```text
-POST /api/auth/logout
+POST   /api/auth/logout
+GET    /api/auth/sessions
+DELETE /api/auth/sessions/{sessionId}
+DELETE /api/auth/sessions/logout-others
+DELETE /api/auth/sessions/logout-all
 ```
 
-当前请求提交 Refresh Token：
-
-```json
-{
-  "refreshToken": "当前客户端持有的 Refresh Token"
-}
-```
-
-调用链为：
+`POST /api/auth/logout` 继续接收 Refresh Token，用于在 Access Token 已过期时撤销当前 Family：
 
 ```text
 LogoutRequest
 → LogoutCommand
 → LogoutService
 → RefreshTokenHasher
-→ RefreshTokenRepository / LoginSessionRepository
-```
-
-应用服务执行：
-
-```text
-Refresh Token 原文
-→ SHA-256
-→ 普通查询 Token，只用于获得 sessionId
+→ 普通查询 Token 定位 sessionId
 → FOR UPDATE 锁定 LoginSession
 → FOR UPDATE 重新读取并锁定 Refresh Token
-→ 再次确认 Token.sessionId 与 Session.id 一致
-→ Session 改为 REVOKED
-→ 该 Family 所有 ACTIVE Token 改为 REVOKED
+→ 撤销 Session 与该 Family 所有 ACTIVE Token
 → USED 历史保持不变
-→ 提交事务
 → HTTP 204 No Content
+```
+
+多设备接口要求 Bearer Access Token。认证链验证 JWT 的 HS256 签名、issuer、时间、`token_type=access`、正整数 `sub` 和 UUID `sid`，再查询 LoginSession，确认 Session 属于该账号且仍然有效。Controller 只从验证后的 JWT 获取可信 `accountId/currentSessionId`，不接受客户端提交操作者身份。
+
+```text
+GET /auth/sessions
+→ 按 accountId 查询会话并用 sid 标记当前会话
+
+DELETE /auth/sessions/{sessionId}
+→ FOR UPDATE 锁定目标 Session
+→ 校验目标属于 JWT.sub
+→ 撤销 Session 和对应 ACTIVE Refresh Token
+
+DELETE /auth/sessions/logout-others
+→ 按 accountId 查询除 JWT.sid 外的 ACTIVE Session
+→ ORDER BY id FOR UPDATE
+→ 逐个撤销 Session 和 Token Family
+
+DELETE /auth/sessions/logout-all
+→ 按 accountId 查询全部 ACTIVE Session
+→ ORDER BY id FOR UPDATE
+→ 包括当前 Session 在内全部撤销
 ```
 
 ### 开发中确认的问题
 
 #### 1. 为什么退出接口没有强制使用 Access Token
 
-“是 HTTP 接口”不代表一定使用 Access Token。登录使用邮箱和密码，刷新使用 Refresh Token，普通业务接口使用 Access Token；退出属于凭据撤销接口，可以使用 Refresh Token 证明客户端持有当前 Session。
-
-当前 AuthService 只有 JWT 签发能力，完整 Bearer Token 解码、Filter、SecurityContext 和可信身份传播安排在 Gateway 阶段。如果现在强制使用 Access Token，会提前引入 GW-03 的认证链路，而且 Access Token 可能正好已经过期，导致客户端无法撤销仍有效的 Refresh Token。
-
-因此当前会话退出使用 Refresh Token 定位：
+“是 HTTP 接口”不代表一定使用 Access Token。登录使用邮箱和密码，刷新使用 Refresh Token，普通受保护接口使用 Access Token；当前退出属于凭据撤销接口，可以使用 Refresh Token 证明客户端持有该 Session。这样即使 Access Token 已经过期，客户端仍能撤销有效的 Refresh Token Family。
 
 ```text
 refresh_token.session_id
 → auth_session
 ```
 
-客户端不提交 `accountId` 或 `sessionId`，避免信任可篡改参数。以后实现会话列表、撤销指定设备和退出其他设备时，需要用经过验证的 Access Token 得到可信 `accountId`，再校验目标 Session 的所有权。
+会话列表和多设备撤销则必须知道“谁正在操作”，因此使用经过验证的 Bearer Access Token。AuthService 已建立 Resource Server Filter、JwtDecoder、SecurityContext 和 LoginSession 状态检查，从 JWT `sub/sid` 获取可信身份；客户端路径中的 `sessionId` 只是被操作资源，不能代表操作者。
 
 #### 2. 为什么退出也保持 Session→Token 锁顺序
 
@@ -1146,31 +1149,27 @@ Session REVOKED
 
 #### 6. 退出后 Access Token 是否立即失效
 
-不会。当前 Access Token 是 15 分钟无状态 JWT，资源服务只验证签名和 `exp` 时，数据库中的 Session 撤销不会主动改变已经签发的 JWT。
-
-当前语义是：
+JWT 字符串本身不会被数据库更新改变，但 AuthService 的受保护请求已经不再只验证签名和 `exp`。`SessionJwtAuthenticationConverter` 会根据 JWT `sid` 查询 LoginSession，并确认 Session 仍然有效：
 
 ```text
-退出后立即禁止继续刷新
-已有 Access Token 最多继续有效约 15 分钟
+JWT 签名与 Claims 验证
+→ 查询 sid 对应 LoginSession
+→ 校验 Session.accountId == JWT.sub
+→ 校验 Session ACTIVE 且未过期
+→ 写入 SecurityContext
 ```
 
-如果将来要求立即失效，需要 Gateway 每次检查 Session 状态，或者维护短期 JTI/Session denylist。这样会让 Access Token 验证重新依赖服务端状态，需要在安全性、性能和可用性之间重新取舍。
+因此 Session 撤销事务提交后，同一 `sid` 下已经签发但尚未过期的 Access Token 会被 AuthService 拒绝。代价是每个受保护请求增加一次数据库查询，使 AuthService 的访问判定不再完全无状态。未来其他微服务如果只验证 JWT、不查询 Session，仍可能接受该 Token 到自然过期；是否由 Gateway 统一执行 Session 检查，需要在安全性、性能和可用性之间继续权衡。已经通过认证并进入业务处理的在途请求也不会被追溯撤回。
 
-#### 7. Logout、Login 和 Refresh 是否需要马上拆子包
+#### 7. Session 用例为什么拆到 application/session
 
-当前 `authentication/application` 只有登录、轮换和退出三个紧密相关的用例，类名前缀已经能够区分职责，因此不为了目录形式提前建立只有两三个类的 `login/logout/refresh` 子包。它们是围绕 `LoginSession` 的并列用例，而不是把 Logout 放到 Login 下面。
-
-等后续出现：
+登录、轮换和当前退出仍保留在 `authentication/application`，因为它们是认证主流程的并列用例。随着会话列表、指定 Session 撤销、退出其他设备和退出全部设备落地，Session 管理类已经形成清晰的一组，因此放入：
 
 ```text
-ListLoginSessionsService
-RevokeLoginSessionService
-LogoutOtherSessionsService
-LogoutAllSessionsService
+authentication/application/session
 ```
 
-再评估按 `login/token/session` 拆分 application 包和 Controller。领域模型与持久化适配器仍按 Session、RefreshToken 的职责组织。
+该包保存 Query/Command、Result 和应用服务；领域模型仍位于 `authentication/domain`，MyBatis 查询和 `FOR UPDATE` 细节仍位于基础设施适配器，避免应用层直接依赖持久化对象。
 
 ### 当前验证与剩余工作
 
@@ -1190,14 +1189,30 @@ Errors: 0
 BUILD SUCCESS
 ```
 
-现有测试仍未直接覆盖退出行为，因此 AUTH-05 保持 `DOING`。下一步需要验证：
+人工验证已经覆盖当前退出、Bearer 认证、会话列表、指定 Session 撤销、退出其他设备、退出全部设备，以及 Session 撤销后相关 Access Token 被拒绝。AUTH-05 因生产链路和人工验证完成进入 `VERIFY`，但现有 9 个自动化测试仍未直接覆盖这些行为，不能标记为 `DONE`。
 
-1. ACTIVE Token 退出后 Session 和当前 Token 都变为 `REVOKED`。
-2. 重复退出仍返回 204，并且数据库状态不重复变化。
-3. 使用 `USED` R1 退出会撤销当前 R2，符合严格复用策略。
-4. 刷新和退出并发时最终状态一致，不遗留 ACTIVE Token。
+后续专项自动化测试需要固定以下证据：
+
+1. ACTIVE Refresh Token 退出后，Session 和当前 Token 都变为 `REVOKED`。
+2. 重复退出仍返回 204，数据库状态保持幂等。
+3. 使用 `USED` R1 会撤销当前 R2，且异常不会回滚撤销结果。
+4. 刷新和撤销并发时最终状态一致，不遗留 ACTIVE Token。
 5. 撤销 Session A 不影响同账号的 Session B。
-6. 再实现会话列表、指定设备撤销、退出其他设备和退出全部设备。
+6. 账号 A 不能查询或撤销账号 B 的 Session。
+7. `logout-others` 保留当前 Session，`logout-all` 使当前 Token 后续请求返回 401。
+
+Bearer JWT 请求流程：
+
+```text
+SecurityFilterChain
+→ BearerTokenAuthenticationFilter 提取 Authorization Header
+→ JwtAuthenticationProvider 调用 JwtDecoder
+→ NimbusJwtDecoder 验证 HS256 签名和 Claims
+→ SessionJwtAuthenticationConverter 查询并验证 LoginSession
+→ JwtAuthenticationToken 写入 SecurityContext
+→ AuthorizationFilter 检查接口访问规则
+→ Controller 从认证后的 Jwt 获取 accountId/sessionId
+```
 
 ## GW-01～GW-05：API Gateway 和可信身份
 

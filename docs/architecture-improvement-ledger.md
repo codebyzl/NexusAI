@@ -51,10 +51,10 @@
 | GW-04/GW-05 | Gateway 验证 Token，但下游接口继续信任请求参数中的 `userId` | IDOR/越权：用户 A 可把参数改成用户 B | 从可信 Token/SecurityContext 获得 `actorId`；客户端 userId 只能作为被操作资源，不能代表操作者 | 用户 A/B 越权集成测试 | 待设计 |
 | RT-02/RT-06 | WebSocket 认证了 Channel，但消息中的 `senderId` 未与 Channel 身份强绑定 | 已登录用户可以伪造发送者 | 服务端忽略客户端 senderId，使用 Channel 上的认证身份 | 伪造 senderId 协议测试 | 待设计 |
 | ACC-04 | 固定盐加 MD5 保存密码 | 抗暴力破解能力不足 | 通过应用层 `PasswordHasher` 端口隔离密码能力，基础设施使用 Spring Security `DelegatingPasswordEncoder`，当前默认生成带算法标识的 bcrypt 哈希并支持后续算法升级 | 注册后数据库无明文密码；密码登录接口手动验证成功；现有构建测试通过 | 已验证（密码哈希与匹配链路已落地） |
-| AUTH-02 | JWT 密钥存在源码配置；Access Token 写入 Redis | 密钥泄漏；Access Token 被迫依赖服务端状态；按 userId 保存不适合多设备 | JWT 密钥通过环境变量注入并校验 Base64/256 bit；Access Token 使用包含 `sid` 的 15 分钟无状态 JWT | 无外部密钥执行 `clean verify`；登录接口解析 Claims 与 TTL | 已验证（签发链路已落地，专项自动化测试待补） |
+| AUTH-02 | JWT 密钥存在源码配置；Access Token 写入 Redis | 密钥泄漏；按 userId 保存 Token 不适合多设备，也缺少明确 Session 关联 | JWT 密钥通过环境变量注入并校验 Base64/256 bit；Access Token 是包含 `sid` 的 15 分钟 JWT，Token 本身不落库；AUTH-05 起 AuthService 在受保护请求中额外检查 Session 状态 | 无外部密钥执行 `clean verify`；登录接口解析 Claims 与 TTL | 已验证（签发链路已落地，专项自动化测试待补） |
 | AUTH-03 | Refresh Token 使用 JWT 原文并按 userId 单值存入 Redis | 原文泄漏后可直接使用；新设备登录覆盖旧设备；无法独立撤销某个会话 | 每次登录创建 UUID Session；Refresh Token 使用 256 bit 随机值，数据库只保存 SHA-256；Access Token 通过 `sid` 关联会话 | 登录接口与 `auth_session` 哈希手动核对；Flyway V2 和现有测试通过 | 已验证（专项自动化测试待补） |
 | AUTH-04 | 刷新时直接覆盖 Redis 中的 Refresh Token，没有历史状态和 Token Family | 无法区分普通无效 Token 与旧 Token 重放；并发刷新缺少可靠的一次性消费约束 | 保存 Refresh Token 历史状态，轮换时标记 `USED` 并创建后继 Token；重用旧 Token 时撤销整个 Session；事务内按 Session→Token 顺序使用行锁串行化消费 | 正常轮换、旧 Token 重放、双请求并发刷新和跨 Session 隔离测试 | 待验证（生产链路已实现，专项自动化测试待补） |
-| AUTH-05 | 缺少清晰的当前会话退出、指定设备撤销和多设备会话语义 | 只删除客户端 Token 无法阻止 Refresh Token 继续换取新凭据；按 userId 全量覆盖又会误伤其他设备 | 当前退出使用 Refresh Token 定位独立 Session，事务内按 Session→Token 加锁并撤销该 Family；接口幂等返回 204，后续再扩展会话列表和按设备撤销 | 当前 Token 退出、重复退出、USED Token、刷新/退出并发及跨 Session 隔离测试 | 实现中（当前会话退出已实现，多设备管理待补） |
+| AUTH-05 | 缺少清晰的当前会话退出、指定设备撤销和多设备会话语义 | 只删除客户端 Token 无法阻止 Refresh Token 继续换取新凭据；按 userId 全量覆盖又会误伤其他设备；信任客户端提交的 accountId/sessionId 会产生 IDOR | 当前退出使用 Refresh Token 定位独立 Session；多设备接口通过验证后的 JWT `sub/sid` 获取可信身份；支持会话列表、指定 Session 撤销、退出其他设备和退出全部设备；事务内统一先锁 Session，再撤销对应 Refresh Token Family；AuthService 在受保护请求中检查 Session 状态，使已撤销 Session 的 Access Token 被立即拒绝 | 当前退出、会话列表、指定/其他/全部 Session 撤销和 Access Token 拒绝场景已人工验证；后续补重放、并发和跨 Session 隔离自动化测试 | 待验证（生产链路和人工验证完成，专项自动化测试待补） |
 
 ## 5. 消息可靠性与实时通信
 
@@ -108,9 +108,9 @@
 - 账号与认证 Controller、Request、Response 和 `ApiErrorResponse`
 - `application.yml` 中的 `springdoc` 配置
 
-实现证据：项目使用适配 Spring Boot 3.5 的 Springdoc OpenAPI 2.9.0，通过 Controller 和 Record DTO 自动生成 OpenAPI 3 契约；当前文档覆盖账号注册、密码登录、Token 轮换和当前会话退出，包含参数校验、成功状态码、统一错误响应 Schema，以及为后续受保护接口预定义的 `bearerAuth` JWT 安全方案。OpenAPI 和 Swagger UI 可以分别通过环境变量关闭，生产环境不需要暴露交互式文档。
+实现证据：项目使用适配 Spring Boot 3.5 的 Springdoc OpenAPI 2.9.0，通过 Controller 和 Record DTO 自动生成 OpenAPI 3 契约；当前文档覆盖账号注册、密码登录、Token 轮换、当前会话退出，以及会话列表、指定 Session 撤销、退出其他设备和退出全部设备。公开接口记录参数校验和统一错误响应，受保护的 Session 接口使用 `bearerAuth` JWT 安全要求。OpenAPI 和 Swagger UI 可以分别通过环境变量关闭，生产环境不需要暴露交互式文档。
 
-验证结果：完整 `clean verify` 成功；本地启动后 `/api/v3/api-docs` 和 `/api/swagger-ui.html` 均返回 HTTP 200，生成的路径为 `/accounts`、`/auth/login`、`/auth/token/refresh`、`/auth/logout`，安全定义包含 `bearerAuth`；设置 `OPENAPI_ENABLED=false` 和 `SWAGGER_UI_ENABLED=false` 后两个地址均返回 404。当前仍缺少 CI 中的 OpenAPI 契约漂移检查，因此状态保持 `VERIFY`。
+验证结果：完整 `clean verify` 成功；本地启动后 `/api/v3/api-docs` 和 `/api/swagger-ui.html` 均返回 HTTP 200，生成路径覆盖 `/accounts`、登录、刷新、当前退出和 `/auth/sessions` 会话管理接口，安全定义包含 `bearerAuth`，受保护接口声明该安全要求；设置 `OPENAPI_ENABLED=false` 和 `SWAGGER_UI_ENABLED=false` 后文档地址均返回 404。当前仍缺少 CI 中的 OpenAPI 契约漂移检查，因此状态保持 `VERIFY`。
 
 ## 9. 每阶段完成后需要补充的证据
 
@@ -179,28 +179,46 @@
 
 当前验证：`env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify` 成功，Flyway V1/V2/V3 在全新 MySQL 8.4 容器执行成功，现有 9 个测试全部通过。残余验证缺口是正常 R1→R2 轮换、R1 重放后的撤销提交、同一 R1 并发刷新和不同 Session 隔离测试，因此状态为“待验证”而非“已验证”。
 
-代价与边界：数据库需要保存 Token 历史并定期清理；严格复用检测要求客户端实现 single-flight，否则同一 R1 的正常并发刷新也可能撤销会话；Access Token 当前固定 15 分钟，若在 Session 即将过期时签发，最多可能比 Session 多存活约 15 分钟，是否将 Access Token `exp` 截断到 Session 绝对过期时间留待后续安全策略确认。
+代价与边界：数据库需要保存 Token 历史并定期清理；严格复用检测要求客户端实现 single-flight，否则同一 R1 的正常并发刷新也可能撤销会话；Access Token 当前固定 15 分钟，若在 Session 即将过期时签发，其 JWT `exp` 最多可能比 Session 晚约 15 分钟。AUTH-05 的 AuthService Session 状态检查会在授权时拒绝这种 Token，但其他只验证 JWT 的服务仍可能接受它，因此是否将 Access Token `exp` 截断到 Session 绝对过期时间仍需结合 Gateway 边界确认。
 
-### AUTH-05：当前会话退出
+### AUTH-05：退出、撤销和多设备策略
 
 实现位置：
 
 - `auth/authentication/application/LogoutCommand.java`
 - `auth/authentication/application/LogoutService.java`
-- `auth/authentication/interfaces/rest/LogoutRequest.java`
+- `auth/authentication/application/session/`
+- `auth/authentication/domain/LoginSessionRepository.java`
+- `auth/authentication/infrastructure/persistence/LoginSessionMapper.java`
+- `auth/authentication/infrastructure/persistence/MyBatisLoginSessionRepository.java`
 - `auth/authentication/interfaces/rest/AuthController.java`
+- `auth/infrastructure/security/SecurityConfig.java`
+- `auth/infrastructure/security/SessionJwtAuthenticationConverter.java`
+- `auth/infrastructure/security/JsonAuthenticationEntryPoint.java`
+- `auth/infrastructure/security/JsonAccessDeniedHandler.java`
+- `auth/infrastructure/security/jwt/JwtConfig.java`
 
-当前实现：`POST /api/auth/logout` 接收当前客户端持有的 Refresh Token。应用服务只用第一次普通 Hash 查询定位 `sessionId`，随后按 AUTH-04 已确定的 Session→Token 顺序执行锁定查询并重新确认关联关系，再把 LoginSession 改为 `REVOKED`，批量撤销该 Family 当前所有 `ACTIVE` Token。`USED` 历史保持不变，便于保留完整轮换和重放证据。
+当前实现包含五个接口：
 
-接口选择 Refresh Token 而不是强制 Access Token，是因为 AuthService 当前尚未建立 Bearer Token Filter/SecurityContext，且用户退出时 Access Token 可能已经过期。Refresh Token 本身是只用于认证服务的长期凭据，可以直接定位当前设备 Session；以后查询或撤销其他设备 Session 时，仍必须依赖经过验证的 Access Token 获取可信 `accountId`，不能相信客户端提交的 accountId。
+- `POST /api/auth/logout`：使用 Refresh Token 幂等退出当前 Session。
+- `GET /api/auth/sessions`：查询当前账号的登录会话并标记当前 Session。
+- `DELETE /api/auth/sessions/{sessionId}`：撤销当前账号拥有的指定 Session。
+- `DELETE /api/auth/sessions/logout-others`：保留 JWT `sid` 对应 Session，撤销其他设备。
+- `DELETE /api/auth/sessions/logout-all`：撤销当前账号的全部 Session。
 
-退出采用幂等语义：未知 Token、记录已清理或会话已经撤销时不暴露内部状态，统一返回 `204 No Content`。在严格复用策略下，R1 轮换为 R2 后，R1 是 `USED` 而不是时间过期；再次提交 R1 仍会结束整个有效 Family，这是有意的重放响应。所有 Token 与 Session 当前共享同一绝对过期时间，因此真正超过 `expires_at` 的 Token 所属 Session 也已经自然失效。
+AuthService 引入 Spring Security Resource Server。`JwtDecoder` 固定使用 HS256，并组合 issuer、时间和自定义 Claims 校验；`token_type` 必须为 `access`，`sub` 必须是正整数账号 ID，`sid` 必须是 UUID。`SecurityFilterChain` 使用无状态 Session 策略，注册、登录、刷新、当前退出、Swagger 和健康检查保持公开，其余接口默认需要 Bearer 认证。认证成功后，`SessionJwtAuthenticationConverter` 根据 `sid` 查询 LoginSession，确认其属于 JWT `sub` 且仍处于有效状态，再把认证结果写入 SecurityContext；401 和 403 通过统一 JSON Handler 返回。
 
-边界与代价：撤销 Session 会立即禁止 Refresh Token 继续轮换，但已经签发的无状态 Access Token 不会被数据库更新主动失效，最多继续存活约 15 分钟。若要求即时退出，需要未来由 Gateway 查询 Session/撤销状态或引入短期 denylist，这会增加状态查询和可用性成本。当前会话退出链路已通过完整构建，但尚未增加退出、重复退出、USED Token、刷新/退出并发和多 Session 隔离专项测试，多设备会话列表与指定设备撤销也尚未实现。
+多设备接口不接受客户端提交的操作者 accountId，而是从验证后的 JWT `sub/sid` 构造应用层命令。指定 Session 撤销在锁定后执行所有权检查，不存在和不属于当前账号都返回 `SESSION_NOT_FOUND`，避免通过响应区分其他账号资源。退出其他设备和退出全部设备使用 `SELECT ... FOR UPDATE` 批量锁定目标 `ACTIVE` Session，并通过 `ORDER BY id` 固定锁顺序；随后逐个撤销 Session 和对应 Family 的 `ACTIVE` Refresh Token。所有无响应体的撤销接口统一返回 `204 No Content`，重复调用保持幂等。
+
+`POST /api/auth/logout` 仍使用 Refresh Token，因为 Access Token 可能已经过期，而客户端仍需要撤销有效的 Refresh Token Family。应用服务先用普通 Hash 查询定位 `sessionId`，再按 Session→Token 的统一顺序执行锁定查询并重新确认关联关系；`USED` 历史保持不变。严格复用策略下，旧 Token 再次提交仍会结束整个有效 Family。
+
+Access Token 的边界已经发生变化：JWT 本身仍不写入数据库，但 AuthService 的受保护请求现在会查询 LoginSession，因此 Session 撤销提交后，同一 `sid` 下尚未过期的 Access Token 会立即被 AuthService 拒绝。代价是认证请求增加一次数据库读取，AuthService 的访问判定不再完全无状态；未来其他服务如果只验证 JWT 签名和 `exp`、不检查 Session，仍可能接受该 Token 直到自然过期，因此 Gateway 和下游服务需要统一身份与撤销边界。
+
+当前验证：人工完成 Bearer 认证、会话列表、指定 Session 撤销、退出其他设备、退出全部设备和撤销后 Access Token 被拒绝等接口场景；`env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify` 成功，Flyway V1/V2/V3 和现有 9 个测试全部通过。残余缺口是尚未用自动化测试固定 Refresh Token 重放、刷新/撤销并发、IDOR 和跨 Session 隔离，因此状态为“待验证”而非“已验证”。
 
 ### 当前认证阶段一分钟项目表达
 
-> InfiniteChat 把 Access Token 和 Refresh Token 都做成 JWT 原文，并按 userId 存入 Redis，这会让 Access Token 失去无状态优势，也会造成多设备覆盖和 Refresh Token 原文泄漏风险。NexusAI 将两类 Token 分开：Access Token 是 15 分钟无状态 JWT，Refresh Token 是 256 bit 高熵随机凭据；每次登录建立独立 Session，数据库只保存 Refresh Token 的 SHA-256，JWT 通过 `sid` 关联会话。Refresh Token 使用独立历史表形成 Token Family，轮换后旧 Token 标记为 `USED` 并关联后继 Token；旧 Token 再次出现时撤销整个 Session。并发控制采用 Session 与 Token 行锁，轮换后的 Token 继承会话绝对过期时间。当前生产链路和构建已经走通，下一步用正常轮换、重放、并发和多 Session 隔离测试补齐验证证据。
+> InfiniteChat 把 Access Token 和 Refresh Token 都做成 JWT 原文，并按 userId 存入 Redis，这会造成多设备覆盖、Refresh Token 原文泄漏和撤销语义不清。NexusAI 将两类 Token 分开：Access Token 是 15 分钟 JWT，Refresh Token 是 256 bit 高熵随机凭据；每次登录建立独立 Session，数据库只保存 Refresh Token 的 SHA-256，JWT 通过 `sid` 关联会话。Refresh Token 使用独立历史表形成 Token Family，轮换后旧 Token 标记为 `USED` 并关联后继 Token；旧 Token 再次出现时撤销整个 Session。并发控制采用 Session 与 Token 行锁，轮换后的 Token 继承会话绝对过期时间。AuthService 使用 Resource Server 验证 Bearer JWT，并在受保护请求中检查 `sid` 对应 Session，使退出、指定设备撤销、退出其他设备和退出全部设备都能立即拒绝相关 Access Token；代价是认证增加数据库读取。当前生产链路、人工验证和构建已经走通，下一步用重放、并发、IDOR 和多 Session 隔离自动化测试补齐验证证据。
 
 高频追问：
 

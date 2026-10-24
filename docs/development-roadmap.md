@@ -42,7 +42,7 @@
 | AUTH-02 | Access Token | JWT 结构、签名、过期、Claims、对称/非对称密钥 | VERIFY |
 | AUTH-03 | 登录会话与 Refresh Token | Stateful/Stateless、Token 哈希、设备会话 | VERIFY |
 | AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | VERIFY |
-| AUTH-05 | 退出、撤销和多设备策略 | 撤销、过期、并发刷新、设备管理 | DOING |
+| AUTH-05 | 退出、撤销和多设备策略 | 撤销、过期、并发刷新、设备管理 | VERIFY |
 | AUTH-06 | Redis 登录状态与验证码 | TTL、Key 规范、缓存与权威数据、限流 | TODO |
 | AUTH-07 | 认证安全测试 | 重放、暴力破解、越权、并发刷新 | TODO |
 | AUTH-08 | 邮件验证码与可替换通知通道 | SMTP、异步发送、模板、频控、短信适配器 | TODO |
@@ -194,4 +194,4 @@
 
 ## 当前任务
 
-当前正在推进 `AUTH-05：退出、撤销和多设备策略`，状态为 `DOING`；`AUTH-04` 保持 `VERIFY`，等待正常轮换、旧 Token 重放、并发刷新、撤销提交和多 Session 隔离专项测试。AUTH-05 当前已实现 `POST /api/auth/logout` 的基础链路：客户端提交 Refresh Token，服务端按 Session→Token 顺序锁定记录，撤销 LoginSession 和该 Family 的全部 `ACTIVE` Refresh Token，并以 `204 No Content` 提供幂等退出语义。按照严格复用检测策略，轮换后处于 `USED` 状态的旧 Token 再次出现也会结束整个 Family；未知 Token 则不暴露存在性并幂等返回。当前 `clean verify` 可通过，Flyway V1/V2/V3 和现有 9 个测试均成功，但退出专项测试、会话列表、指定设备撤销、退出其他设备和退出全部设备仍未完成。无状态 Access Token 在退出后最多继续有效约 15 分钟，即时失效策略留待 Gateway/Redis 边界确认。
+`AUTH-05：退出、撤销和多设备策略` 已进入 `VERIFY`；`AUTH-04` 保持 `VERIFY`，后续仍需用专项自动化测试固化正常轮换、旧 Token 重放、并发刷新、撤销提交和跨 Session 隔离证据。AUTH-05 已完成 `POST /api/auth/logout`、`GET /api/auth/sessions`、`DELETE /api/auth/sessions/{sessionId}`、`DELETE /api/auth/sessions/logout-others` 和 `DELETE /api/auth/sessions/logout-all`。AuthService 现通过 Spring Security Resource Server 验证 Bearer JWT，并从验证后的 `sub/sid` 获取可信账号和当前 Session；受保护请求还会查询 LoginSession 状态，因此 Session 撤销提交后，同一 `sid` 下尚未过期的 Access Token 也会在 AuthService 被拒绝。当前退出继续使用 Refresh Token，以便 Access Token 过期时仍可撤销当前 Family；多设备撤销统一先锁 Session，再撤销对应 `ACTIVE` Refresh Token，批量场景按 Session ID 固定顺序加锁，指定 Session 操作执行账号所有权校验。人工接口场景已经验证，`env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify` 通过，Flyway V1/V2/V3 和现有 9 个测试全部成功；由于尚未增加 AUTH-05 专项自动化测试，状态保持 `VERIFY` 而非 `DONE`。
