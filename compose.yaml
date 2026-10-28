@@ -23,8 +23,44 @@ services:
       retries: 10
       start_period: 30s
 
+  redis:
+    image: redis:7.4.7-alpine
+    container_name: nexus-redis
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+
+    command:
+      - /bin/sh
+      - -c
+      - |
+        exec redis-server \
+          --requirepass "$$REDIS_PASSWORD" \
+          --appendonly yes
+
+    volumes:
+      - redis-data:/data
+
+    networks:
+      - backend
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -qx PONG'
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+
 volumes:
   mysql-data:
+  redis-data:
 
 networks:
   backend:

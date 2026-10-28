@@ -20,6 +20,7 @@ import io.github.codebyzl.nexus.auth.authentication.application.session.RevokeOt
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -59,12 +60,14 @@ public class AuthController {
     public LoginWithPasswordResponse login(
             @Valid
             @RequestBody
-            LoginWithPasswordRequest request
+            LoginWithPasswordRequest request,
+            HttpServletRequest httpServletRequest
     ) {
         LoginWithPasswordCommand command =
                 new LoginWithPasswordCommand(
                         request.email(),
-                        request.password()
+                        request.password(),
+                        httpServletRequest.getRemoteAddr()
                 );
 
         LoginWithPasswordResult result =

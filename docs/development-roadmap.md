@@ -43,7 +43,7 @@
 | AUTH-03 | 登录会话与 Refresh Token | Stateful/Stateless、Token 哈希、设备会话 | VERIFY |
 | AUTH-04 | Refresh Token 轮换 | Rotation、Reuse Detection、Token Family | VERIFY |
 | AUTH-05 | 退出、撤销和多设备策略 | 撤销、过期、并发刷新、设备管理 | VERIFY |
-| AUTH-06 | Redis 登录状态与验证码 | TTL、Key 规范、缓存与权威数据、限流 | TODO |
+| AUTH-06 | Redis 登录状态与验证码 | TTL、Key 规范、缓存与权威数据、限流 | DOING（登录限流已实现并经作者人工验证，专项自动化测试及验证码待补） |
 | AUTH-07 | 认证安全测试 | 重放、暴力破解、越权、并发刷新 | TODO |
 | AUTH-08 | 邮件验证码与可替换通知通道 | SMTP、异步发送、模板、频控、短信适配器 | TODO |
 
@@ -193,5 +193,7 @@
 | JOB-03 | 模拟面试与追问复盘 | Java、数据库、中间件、系统设计、AI/RAG | TODO |
 
 ## 当前任务
+
+AUTH-06 的登录限流子任务已实现并由作者反馈人工测试通过，子任务处于 `VERIFY`。实现包含 Redis 邮箱/IP 失败计数、Lua 原子更新与 TTL 封禁、成功清理邮箱计数、HMAC Key、HTTP 429 和 `Retry-After`。当前 Lua 使用 `count > maxFailures`，默认第 6 次失败触发封禁；Redis 异常时记录日志并放行。验证码与其他 Redis 登录状态能力尚未完成，AUTH-06 整体保持 `DOING`。本次编译通过，未新增限流专项自动化测试；人工测试的逐项输入输出尚未归档，不据此宣称全部边界场景已验证。
 
 `AUTH-05：退出、撤销和多设备策略` 已进入 `VERIFY`；`AUTH-04` 保持 `VERIFY`，后续仍需用专项自动化测试固化正常轮换、旧 Token 重放、并发刷新、撤销提交和跨 Session 隔离证据。AUTH-05 已完成 `POST /api/auth/logout`、`GET /api/auth/sessions`、`DELETE /api/auth/sessions/{sessionId}`、`DELETE /api/auth/sessions/logout-others` 和 `DELETE /api/auth/sessions/logout-all`。AuthService 现通过 Spring Security Resource Server 验证 Bearer JWT，并从验证后的 `sub/sid` 获取可信账号和当前 Session；受保护请求还会查询 LoginSession 状态，因此 Session 撤销提交后，同一 `sid` 下尚未过期的 Access Token 也会在 AuthService 被拒绝。当前退出继续使用 Refresh Token，以便 Access Token 过期时仍可撤销当前 Family；多设备撤销统一先锁 Session，再撤销对应 `ACTIVE` Refresh Token，批量场景按 Session ID 固定顺序加锁，指定 Session 操作执行账号所有权校验。人工接口场景已经验证，`env -u JWT_ACCESS_TOKEN_SECRET ./mvnw clean verify` 通过，Flyway V1/V2/V3 和现有 9 个测试全部成功；由于尚未增加 AUTH-05 专项自动化测试，状态保持 `VERIFY` 而非 `DONE`。

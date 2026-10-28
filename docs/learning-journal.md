@@ -1034,6 +1034,29 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 退出、主动撤销和设备会话管理留到 `AUTH-05`；Redis、验证码和登录限流留到 `AUTH-06`；前端预刷新、401 重试、single-flight 和多标签页协调留到 `WEB-02`。
 
+## AUTH-06：Redis 登录限流阶段记录
+
+### 实际实现
+
+- 增加 Redis Compose 服务、连接配置和专用 HMAC 密钥配置；`.env.example` 列出连接超时与 `LOGIN_HMAC_SECRET`，真实密钥不入库。
+- Controller 从 `getRemoteAddr()` 获取 IP，应用层使用规范化邮箱构建限流上下文，校验账号密码前检查封禁。
+- 不存在的账号、不可登录账号、错误密码均记录失败；成功登录清理邮箱失败和封禁 Key，保留 IP 计数。
+- Lua 使用 `INCR`、`PEXPIRE`、`PTTL` 和带 PX 的 SET 管理失败窗口与封禁。当前 `count > maxFailures`，默认第 6 次失败触发封禁。
+- `LoginRateLimitedException` 继承业务异常，统一异常处理返回 HTTP 429 和向上取整、最少 1 秒的 `Retry-After`。
+
+### 问题与验证
+
+代码检查期间修复了业务错误枚举 switch 不完整、账号不存在跳过失败计数、成功未清理邮箱计数，以及限流响应缺少 `Retry-After` 的问题。
+
+作者反馈已自行测试通过，尚未提供逐项测试输入输出，因此仅记录为“人工验证通过”，不推断并发、故障和全部边界测试已通过。本次执行 `./mvnw -q -pl nexus-auth-service -am -DskipTests compile` 成功；未执行完整测试，未新增专项自动化测试。
+
+### 遗留边界
+
+- 登录限流子任务保持 VERIFY；AUTH-06 整体 DOING，验证码和其他 Redis 登录状态能力尚未完成。
+- 专项测试仍需固定阈值、TTL、邮箱/IP 隔离、成功清理、429/Retry-After 和 Redis 故障降级行为；测试环境的 Redis/HMAC 配置也需补齐。
+- Redis 异常选择 fail-open，不能承诺故障期间防暴力破解；两个维度不是一个原子操作。
+- 当前直接获取连接对端 IP；引入反向代理后需配置可信代理边界，不直接信任客户端转发头。
+
 ## AUTH-05：退出、撤销和多设备策略
 
 ### 当前完成范围

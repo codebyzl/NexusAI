@@ -5,5 +5,6 @@ public enum BusinessErrorType {
     CONFLICT,
     UNAUTHORIZED,
     FORBIDDEN,
+    TOO_MANY_REQUESTS,
     NOT_FOUND
 }

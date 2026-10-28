@@ -56,6 +56,15 @@
 | AUTH-04 | 刷新时直接覆盖 Redis 中的 Refresh Token，没有历史状态和 Token Family | 无法区分普通无效 Token 与旧 Token 重放；并发刷新缺少可靠的一次性消费约束 | 保存 Refresh Token 历史状态，轮换时标记 `USED` 并创建后继 Token；重用旧 Token 时撤销整个 Session；事务内按 Session→Token 顺序使用行锁串行化消费 | 正常轮换、旧 Token 重放、双请求并发刷新和跨 Session 隔离测试 | 待验证（生产链路已实现，专项自动化测试待补） |
 | AUTH-05 | 缺少清晰的当前会话退出、指定设备撤销和多设备会话语义 | 只删除客户端 Token 无法阻止 Refresh Token 继续换取新凭据；按 userId 全量覆盖又会误伤其他设备；信任客户端提交的 accountId/sessionId 会产生 IDOR | 当前退出使用 Refresh Token 定位独立 Session；多设备接口通过验证后的 JWT `sub/sid` 获取可信身份；支持会话列表、指定 Session 撤销、退出其他设备和退出全部设备；事务内统一先锁 Session，再撤销对应 Refresh Token Family；AuthService 在受保护请求中检查 Session 状态，使已撤销 Session 的 Access Token 被立即拒绝 | 当前退出、会话列表、指定/其他/全部 Session 撤销和 Access Token 拒绝场景已人工验证；后续补重放、并发和跨 Session 隔离自动化测试 | 待验证（生产链路和人工验证完成，专项自动化测试待补） |
 
+### AUTH-06 登录限流实现证据
+
+- 应用层通过 `LoginAttemptLimiter` 端口接入限流，邮箱先规范化；账号不存在、账号不可登录和密码错误统一记录失败。
+- Redis 适配器按邮箱/IP 维护失败窗口与封禁 TTL，Lua 原子更新单个维度的计数和封禁 Key；两个维度分别执行，不宣称跨维度原子性。
+- Key 使用独立密钥 HMAC-SHA256 隐藏邮箱/IP；成功登录清理邮箱维度，保留 IP 维度计数。
+- 限流异常继承 `BusinessException`，统一处理器返回 429、业务错误码和向上取整的 `Retry-After` 秒数。
+- 当前阈值为 `count > maxFailures`；Redis 数据访问异常时 fail-open 并记录日志。当前配置面向单节点 Redis，不宣称支持 Redis Cluster 多 Key 脚本。
+- 状态：待验证（作者反馈人工测试通过，本次编译通过；专项自动化测试、逐项人工测试记录及验证码能力待补）。
+
 ## 5. 消息可靠性与实时通信
 
 | ID | InfiniteChat 当前实现 | 常见问题 | NexusAI 改进 | 验证方式 | 状态 |

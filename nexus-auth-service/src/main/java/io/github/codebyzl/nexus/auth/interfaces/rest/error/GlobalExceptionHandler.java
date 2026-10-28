@@ -7,12 +7,16 @@ package io.github.codebyzl.nexus.auth.interfaces.rest.error;
  */
 
 import io.github.codebyzl.nexus.auth.application.exception.BusinessException;
+import io.github.codebyzl.nexus.auth.authentication.application.exception.LoginRateLimitedException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.time.Duration;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -27,6 +31,7 @@ public class GlobalExceptionHandler {
             case UNAUTHORIZED -> HttpStatus.UNAUTHORIZED;
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
             case NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case TOO_MANY_REQUESTS -> HttpStatus.TOO_MANY_REQUESTS;
         };
 
         ApiErrorResponse response = new ApiErrorResponse(
@@ -34,7 +39,24 @@ public class GlobalExceptionHandler {
                 exception.getMessage()
         );
 
-        return ResponseEntity.status(status).body(response);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(status);
+
+        if (exception instanceof LoginRateLimitedException limitedException) {
+            Duration retryAfter = limitedException.getRetryAfter();
+
+            // 向上取整，例如 1.5 秒返回 2 秒，至少返回 1 秒
+            long seconds = Math.max(
+                    1,
+                    retryAfter.toSeconds() + (retryAfter.getNano() > 0 ? 1 : 0)
+            );
+
+            builder.header(
+                    HttpHeaders.RETRY_AFTER,
+                    Long.toString(seconds)
+            );
+        }
+
+        return builder.body(response);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

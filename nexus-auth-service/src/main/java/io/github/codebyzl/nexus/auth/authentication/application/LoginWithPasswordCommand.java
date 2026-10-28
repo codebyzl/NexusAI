@@ -5,6 +5,6 @@ package io.github.codebyzl.nexus.auth.authentication.application;
  * @version: 1.0
  * @Description:
  */
-public record LoginWithPasswordCommand(String email, String rawPassword)
+public record LoginWithPasswordCommand(String email, String rawPassword, String clientIp)
 {
 }
