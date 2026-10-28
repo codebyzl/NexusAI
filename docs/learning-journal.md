@@ -1034,29 +1034,6 @@ AUTH-04 暂时进入 `VERIFY`，不标记为 `DONE`。下一步需要补：
 
 退出、主动撤销和设备会话管理留到 `AUTH-05`；Redis、验证码和登录限流留到 `AUTH-06`；前端预刷新、401 重试、single-flight 和多标签页协调留到 `WEB-02`。
 
-## AUTH-06：Redis 登录限流阶段记录
-
-### 实际实现
-
-- 增加 Redis Compose 服务、连接配置和专用 HMAC 密钥配置；`.env.example` 列出连接超时与 `LOGIN_HMAC_SECRET`，真实密钥不入库。
-- Controller 从 `getRemoteAddr()` 获取 IP，应用层使用规范化邮箱构建限流上下文，校验账号密码前检查封禁。
-- 不存在的账号、不可登录账号、错误密码均记录失败；成功登录清理邮箱失败和封禁 Key，保留 IP 计数。
-- Lua 使用 `INCR`、`PEXPIRE`、`PTTL` 和带 PX 的 SET 管理失败窗口与封禁。当前 `count > maxFailures`，默认第 6 次失败触发封禁。
-- `LoginRateLimitedException` 继承业务异常，统一异常处理返回 HTTP 429 和向上取整、最少 1 秒的 `Retry-After`。
-
-### 问题与验证
-
-代码检查期间修复了业务错误枚举 switch 不完整、账号不存在跳过失败计数、成功未清理邮箱计数，以及限流响应缺少 `Retry-After` 的问题。
-
-作者反馈已自行测试通过，尚未提供逐项测试输入输出，因此仅记录为“人工验证通过”，不推断并发、故障和全部边界测试已通过。本次执行 `./mvnw -q -pl nexus-auth-service -am -DskipTests compile` 成功；未执行完整测试，未新增专项自动化测试。
-
-### 遗留边界
-
-- 登录限流子任务保持 VERIFY；AUTH-06 整体 DOING，验证码和其他 Redis 登录状态能力尚未完成。
-- 专项测试仍需固定阈值、TTL、邮箱/IP 隔离、成功清理、429/Retry-After 和 Redis 故障降级行为；测试环境的 Redis/HMAC 配置也需补齐。
-- Redis 异常选择 fail-open，不能承诺故障期间防暴力破解；两个维度不是一个原子操作。
-- 当前直接获取连接对端 IP；引入反向代理后需配置可信代理边界，不直接信任客户端转发头。
-
 ## AUTH-05：退出、撤销和多设备策略
 
 ### 当前完成范围
@@ -1235,7 +1212,195 @@ SecurityFilterChain
 → JwtAuthenticationToken 写入 SecurityContext
 → AuthorizationFilter 检查接口访问规则
 → Controller 从认证后的 Jwt 获取 accountId/sessionId
+
 ```
+
+## AUTH-06：Redis 登录限流阶段记录
+
+### 实际实现
+
+- 增加 Redis Compose 服务、连接配置和专用 HMAC 密钥配置；`.env.example` 列出连接超时与 `LOGIN_HMAC_SECRET`，真实密钥不入库。
+- Controller 从 `getRemoteAddr()` 获取 IP，应用层使用规范化邮箱构建限流上下文，校验账号密码前检查封禁。
+- 不存在的账号、不可登录账号、错误密码均记录失败；成功登录清理邮箱失败和封禁 Key，保留 IP 计数。
+- Lua 使用 `INCR`、`PEXPIRE`、`PTTL` 和带 PX 的 SET 管理失败窗口与封禁。当前 `count > maxFailures`，默认第 6 次失败触发封禁。
+- `LoginRateLimitedException` 继承业务异常，统一异常处理返回 HTTP 429 和向上取整、最少 1 秒的 `Retry-After`。
+
+### 开发中遇到的问题与方案调整
+
+#### 1. `loginAttemptFailureScript` 到底有没有写
+
+最初看到 `RedisLoginAttemptLimiter` 中的构造器依赖：
+
+```java
+private final RedisScript<Long> loginAttemptFailureScript;
+```
+
+我问的是“这个是不是还没有写”。检查后发现，需要区分两件事：Lua 文件已经存在于 `src/main/resources/redis/login-attempt-failure.lua`，但把资源文件加载为 `RedisScript<Long>` 的 Spring Bean 尚未注册。
+
+文件存在不等于容器中存在可注入的对象。Lombok 的 `@RequiredArgsConstructor` 只生成构造器，不会替我加载 Lua，也不会创建脚本 Bean。这个缺口会导致依赖注入失败；当时是代码检查发现，并没有记录一次实际启动失败的日志。
+
+最终在 `infrastructure/security/ratelimit/LoginAttemptRedisConfig.java` 中注册：
+
+```java
+@Configuration
+public class LoginAttemptRedisConfig {
+    @Bean
+    public RedisScript<Long> loginAttemptFailureScript() {
+        return RedisScript.of(
+                new ClassPathResource("redis/login-attempt-failure.lua"),
+                Long.class
+        );
+    }
+}
+```
+
+配置类与 Redis 适配器同包，位于启动类扫描范围内，不需要额外配置 `@ComponentScan`。`Long.class` 声明脚本结果类型，与 Lua 返回的剩余封禁毫秒数或 0 对应。这类资源加载与框架对象组装属于基础设施层，不放进应用层端口。
+
+#### 2. Redis 适配器写完，为什么还不能算登录限流完成
+
+初版已有 `check`、`recordFailure`、`recordSuccess` 和 Lua 实现，但 `LoginWithPasswordService` 没有调用这些方法。仅有一个 Spring Component，不代表它自动参与登录。
+
+后续按实际请求链补齐三个位置：
+
+```text
+AuthController
+  → getRemoteAddr() 获取连接对端 IP
+  → LoginWithPasswordCommand 增加 clientIp
+  → LoginWithPasswordService 用 Email.value() 和 IP 构造上下文
+  → check：封禁时直接拒绝，不继续校验密码
+  → 校验账号、状态和密码
+      → 失败：recordFailure，按结果返回 401 或 429
+      → 成功：保存 Session/Refresh Token，清理邮箱失败记录，签发 Access Token
+```
+
+Controller 负责提取 HTTP 信息，应用层只接收字符串，不依赖 `HttpServletRequest`。邮箱使用 `Email` 值对象规范化后的结果，避免同一个邮箱因大小写或首尾空白形成不同计数 Key。当前使用 `getRemoteAddr()`，没有直接读取客户端可伪造的 `X-Forwarded-For`；以后经过可信反向代理部署时，还需重新确认真实客户端 IP 的解析边界。
+
+#### 3. 账号不存在时，原来的 `orElseThrow` 为什么要改
+
+接入初版只在“账号存在但校验失败”的分支调用 `recordFailure`，原来的代码仍是：
+
+```java
+Account account = accountRepository.findByEmail(email)
+        .orElseThrow(InvalidCredentialsException::new);
+```
+
+这样账号不存在会提前退出，既不增加邮箱计数，也不增加 IP 计数。攻击者不断更换不存在的邮箱，就能让这些请求绕过 IP 失败累计。
+
+最终改为 `orElse(null)`，让三个失败原因进入同一个分支：
+
+```java
+if (account == null
+        || !account.canLogin()
+        || !passwordHasher.matches(
+                command.rawPassword(), account.getPasswordHash())) {
+    LoginAttemptDecision failure = loginAttemptLimiter.recordFailure(context);
+    if (!failure.allowed()) {
+        throw new LoginRateLimitedException(failure.retryAfter());
+    }
+    throw new InvalidCredentialsException();
+}
+```
+
+这里的空值判断依赖 `||` 短路，不会在 `account == null` 时调用后面的实例方法。统一失败信息可以避免直接通过响应文案区分账号是否存在，但不代表已经解决了时间侧信道：不存在账号时仍没有执行同等成本的密码哈希匹配，这一点不能写成“完全防账号枚举”。
+
+#### 4. 成功登录后为什么还要调用 `recordSuccess`
+
+第一次审核发现，登录成功路径还没有调用 `recordSuccess(context)`。如果保留此前累计的邮箱失败次数，用户在封禁前成功登录后，后续一次输错仍会接着旧次数累计，与当前预期不符。
+
+补上调用后，当前实现清理邮箱的 failure/blocked Key，但不清理 IP 维度。两者的职责不同：邮箱计数用于保护目标账号，IP 计数用于限制同一来源尝试多个账号。如果登录任意自有账号就清空 IP 失败数，攻击者可以在撞库请求中穿插成功登录，反复重置来源限制。
+
+当前清理发生在 MySQL 事务方法内部，Redis 不随 MySQL 回滚。后续签发 Token 或数据库提交失败时，邮箱计数可能已被清理，因此不能把这一流程描述为“数据库与 Redis 跨存储原子提交”。
+
+#### 5. 限流异常为什么不能直接继承业务异常
+
+讨论中最初给出的方案让 `LoginRateLimitedException` 直接继承 `RuntimeException`，并通过专用 `@ExceptionHandler` 返回响应。我提出：项目已有 `BusinessException`，为什么不能沿用？
+
+结论是可以，而且应区分两个问题：
+
+- 异常继承解决应用层如何表达错误；限流可以属于业务异常。
+- 异常处理器解决 HTTP 层如何生成状态、响应体和响应头；需要特殊响应头，并不要求另建一套异常继承关系。
+
+最终增加 `BusinessErrorType.TOO_MANY_REQUESTS`，让 `LoginRateLimitedException` 继承 `BusinessException`，保存统一错误码 `LOGIN_RATE_LIMITED`、错误信息和 `Duration retryAfter`。异常不直接依赖 HTTP 状态码或 Header，HTTP 转换仍留在接口层。
+
+#### 6. 新增业务错误类型后，为什么编译失败
+
+新增枚举之后，统一处理器里的 switch 表达式没有同步补分支。实际执行：
+
+```bash
+./mvnw -pl nexus-auth-service -am -DskipTests compile
+```
+
+编译器在 `GlobalExceptionHandler.java` 报错：
+
+```text
+switch 表达式不包含所有可能的输入值
+```
+
+原因不是异常继承出错，而是原 switch 穷举了旧枚举值，新增 `TOO_MANY_REQUESTS` 后不再完整。补上：
+
+```java
+case TOO_MANY_REQUESTS -> HttpStatus.TOO_MANY_REQUESTS;
+```
+
+后重新编译通过。这次也说明，不加兜底 default 的枚举 switch 可以在编译期提醒我补齐新错误类型的 HTTP 映射，而不是让遗漏静默落入某个默认状态。
+
+#### 7. 已经返回 429，为什么还需要 `Retry-After`
+
+补上枚举分支后，统一处理器已经能返回 429 和业务错误体，但异常中的 `retryAfter` 还没有传给客户端。429 表示请求被限制；`Retry-After` 则告诉客户端建议等待多久。
+
+这里没有继续使用独立处理器，而是在原有 `handleBusinessException` 中创建 `ResponseEntity.BodyBuilder`，只对限流异常补充 Header：
+
+```java
+ResponseEntity.BodyBuilder builder = ResponseEntity.status(status);
+if (exception instanceof LoginRateLimitedException limitedException) {
+    Duration retryAfter = limitedException.getRetryAfter();
+    long seconds = Math.max(
+            1,
+            retryAfter.toSeconds() + (retryAfter.getNano() > 0 ? 1 : 0)
+    );
+    builder.header(HttpHeaders.RETRY_AFTER, Long.toString(seconds));
+}
+return builder.body(response);
+```
+
+Redis 返回的是毫秒，HTTP 的这一种 `Retry-After` 写法使用整数秒。如果直接截断，1.5 秒会变成 1 秒，客户端可能提前重试；因此向上取整，且至少返回 1 秒。响应体仍复用业务异常的 code/message，其他异常不添加该 Header。
+
+这个方案让统一处理器知道具体的限流异常类型，是当前规模下的明确取舍，并不意味着所有业务异常都必须各写一个 Handler。
+
+#### 8. `maxFailures=5` 是第 5 次还是第 6 次封禁
+
+审核时发现 Lua 仍然使用：
+
+```lua
+if count > max_failures then
+```
+
+因此默认配置下，前 5 次失败尚未触发封禁，第 6 次失败才创建 blocked Key，并由应用层返回 429。若规则改成“第 5 次失败立即封禁”，需要改为 `>=`，而不是只修改注释。
+
+目前代码保留 `>`。记录必须与实现一致，不把此前建议修改的内容写成已经修改，也不把这个可选策略差异直接当作已确认的缺陷。后续自动化测试应固定选择的边界，避免改动后出现差一错误。
+
+### 当前验证证据与未完成项
+
+作者反馈已自行测试通过，但尚未在本记录中提供逐项请求、响应和 Redis Key/TTL 结果，因此记录为“人工验证通过”，不推断并发、故障和全部边界场景均已验证。
+
+本阶段提交前执行并通过：
+
+```bash
+./mvnw -q -pl nexus-auth-service -am -DskipTests compile
+git diff --check
+docker compose config --quiet
+```
+
+这些结果分别证明 Java 源码能够编译、补丁没有检测到空白错误、Compose 配置可解析；不等同于完整业务验收。本阶段未执行完整测试，未新增限流专项自动化测试。
+
+还发现 `.env.example` 缺少新增的超时与 HMAC 配置示例，已补充 `REDIS_CONNECT_TIMEOUT`、`REDIS_TIMEOUT`、`LOGIN_HMAC_SECRET` 及专用随机密钥生成提示，未提交真实 `.env` 或密钥。测试资源中仍只有 JWT 配置，Redis/HMAC 的独立测试配置需要补齐，不能让测试长期依赖开发者本地环境。
+
+### 遗留边界
+
+- 登录限流子任务保持 VERIFY；AUTH-06 整体 DOING，验证码和其他 Redis 登录状态能力尚未完成。
+- 专项测试仍需固定阈值、TTL、邮箱/IP 隔离、成功清理、429/Retry-After 和 Redis 故障降级行为；测试环境的 Redis/HMAC 配置也需补齐。
+- Redis 异常选择 fail-open，不能承诺故障期间防暴力破解；两个维度不是一个原子操作。
+- 当前直接获取连接对端 IP；引入反向代理后需配置可信代理边界，不直接信任客户端转发头。
 
 ## GW-01～GW-05：API Gateway 和可信身份
 
