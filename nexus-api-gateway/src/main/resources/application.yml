@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: nexus-api-gateway
+
+  cloud:
+    gateway:
+      server:
+        webflux:
+          # 单层入口使用自定义 X-Nexus-Client-IP，不自动生成/追加代理链。
+          forwarded:
+            enabled: false
+          x-forwarded:
+            enabled: false
+          httpclient:
+            connect-timeout: 3000
+            response-timeout: 5s
+          routes:
+            - id: auth-service
+              uri: ${AUTH_SERVICE_URI:http://127.0.0.1:8081}
+              predicates:
+                - Path=/api/auth/**,/api/accounts
+
+server:
+  # 必须保留原始连接对端，不能先让客户端 Forwarded 头改写 remoteAddress。
+  forward-headers-strategy: none
+  address: 127.0.0.1
+  port: ${GATEWAY_PORT:8080}
+
+# 只验签，不签发 Token；当前 HMAC 方案必须与 AuthService 使用相同密钥。
+nexus:
+  security:
+    jwt:
+      issuer: ${JWT_ISSUER:nexus-auth-service}
+      secret: ${JWT_ACCESS_TOKEN_SECRET}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true

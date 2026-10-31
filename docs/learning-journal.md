@@ -1402,15 +1402,281 @@ docker compose config --quiet
 - Redis 异常选择 fail-open，不能承诺故障期间防暴力破解；两个维度不是一个原子操作。
 - 当前直接获取连接对端 IP；引入反向代理后需配置可信代理边界，不直接信任客户端转发头。
 
-## GW-01～GW-05：API Gateway 和可信身份
+## GW-01～GW-03：响应式网关、路由与 JWT 入口认证
 
-- 创建响应式 Gateway，并把请求路由到 AuthService。
-- 在 Gateway 验证 Token，处理白名单和统一认证失败响应。
-- 由服务端生成可信用户身份，禁止客户端通过参数冒充其他用户。
-- 处理伪造身份 Header 和绕过 Gateway 直连服务的问题。
-- 增加越权和认证绕过测试。
+### 从原项目理解本轮改进
 
-完成标志：下游服务只信任经过验证的身份，不能通过修改 `userId` 或 Header 越权。
+InfiniteChat 的 `GateWay/filter/AuthorizeFilter.java` 使用 `GlobalFilter` 手动解析 Access-Token/Refresh-Token，再通过 `StringRedisTemplate` 查询按 userId 存储的 Token；白名单用 `startsWith` 匹配。这里需要注意：响应式 Filter 内直接调用同步 Redis，不会因为返回 `Mono<Void>` 就变为非阻塞；前缀白名单也不等同于精确接口与方法白名单。
+
+NexusAI 先完成固定地址路由，再接入 Spring Security Reactive Resource Server。网关不查询认证数据库或 Redis、不参与 Token 签发与刷新；只处理 Bearer Access Token 的入口校验。注册、刷新、退出仍交给 AuthService 的现有用例。
+
+### GW-01/02 已完成的实践与问题
+
+- 父工程加入网关模块与 Cloud 2025.0.3 BOM，子模块使用 WebFlux Gateway、Actuator 和测试依赖，不继承全局 MVC/数据库依赖。
+- 初版 `application.yml` 将 `server`、`management` 错缩进到 `spring` 下。启动/健康测试仍通过，因为随机端口和默认健康端点掩盖了配置失效；后续修正为三个顶层节点。这说明“能启动”不代表监听地址与所有配置都已生效。
+- 直接路由 `/api/accounts` 与 `/api/auth/**` 到 AuthService；不配置 StripPrefix，因为下游本来就有 `/api` context-path。
+- 作者反馈真实接口人工测试成功；本次另外补充模拟下游的路径、查询参数、请求体、Authorization、401 和 429/Retry-After 透传验证。
+- macOS ARM64 上仍出现 DNS 原生库加载失败并回退系统解析的告警；测试通过不代表域名解析问题已解决。本轮未扩大范围修改平台依赖。
+
+### 导读 1：先看 GatewaySecurityConfig，理解请求被如何分类
+
+入口文件：
+
+```text
+nexus-api-gateway/src/main/java/io/github/codebyzl/nexus/gateway/
+  infrastructure/security/GatewaySecurityConfig.java
+```
+
+该类创建 `SecurityWebFilterChain`，使用 WebFlux 的 `ServerHttpSecurity`，不是 AuthService 中 Servlet 的 `HttpSecurity`。
+
+```text
+POST /api/accounts、/api/auth/login、/api/auth/token/refresh、/api/auth/logout
+  → 允许匿名，但提供无效 Bearer 时仍会认证失败
+GET /actuator/health 及子路径
+  → 允许健康探测
+其他 /api/auth/**
+  → 必须通过 JWT 认证
+其他入口
+  → 默认拒绝
+```
+
+顺序有意义：先列出精确的匿名方法/路径，再保护其他 Auth 请求，最后 denyAll。网关匹配完整 `/api/...`；AuthService 安全匹配不含 Servlet context-path，不能机械复制其 `/auth/...` 白名单。
+
+本轮没有为了匿名登录而放行整个 `/api/auth/**`，因此查询会话和撤销全部会话仍受保护。框架的表单登录、HTTP Basic、默认 logout 均关闭；`NoOpServerSecurityContextRepository` 和 `NoOpServerRequestCache` 避免保存登录状态和待重定向请求，后续请求必须重新携带 Bearer Token。
+
+关闭 CSRF 的前提是当前认证依赖客户端显式发送的 Authorization Header，不依赖浏览器自动携带的认证 Cookie。将来改用 Cookie 凭据时必须重新评估，不把关闭 CSRF 当作网关通用模板。
+
+### 导读 2：再看 GatewayJwtConfig，理解“验签”和“业务身份”
+
+```text
+infrastructure/security/jwt/GatewayJwtProperties.java
+infrastructure/security/jwt/GatewayJwtConfig.java
+```
+
+Properties 绑定 issuer 和 Base64 secret，启动时检查必填、Base64 格式及至少 32 字节。生产配置没有默认测试密钥；测试值只放在 `src/test/resources/application.properties`。
+
+`NimbusReactiveJwtDecoder` 固定 HS256，并组合两类 Validator：
+
+1. `JwtValidators.createDefaultWithIssuer`：默认时间有效性检查及 issuer；保留与 AuthService 相同的框架默认时钟偏差，不宣称过期瞬间零容差拒绝。
+2. 必要 Claims：`token_type=access`、正整数 `sub`、可解析 UUID 的 `sid`、必须存在 `exp`。
+
+这里不配置 `JwtEncoder`，也不把 AuthService 的 Session 查询转换器搬入网关。认证成功的含义只是“这个 JWT 可信且符合契约”，不是“此人可访问任何资源”，也不是“Session 没有被撤销”。
+
+```text
+Gateway：本地验 JWT → 原样转发 Authorization
+AuthService：再次验 JWT → 查询 Session → 执行业务权限校验
+```
+
+双重验签是当前明确选择：下游保留独立安全边界，不直接信任客户端身份 Header。网关持有同一 HMAC 密钥，密码学上也能签名；未实现非对称密钥隔离、JWKS 或轮换机制。
+
+### 导读 3：统一错误响应，不等于复用 Servlet 处理器
+
+对外沿用现有 AuthService 契约：
+
+```text
+401：INVALID_ACCESS_TOKEN / Access Token 无效或已过期
+     WWW-Authenticate: Bearer
+403：FORBIDDEN / 无权执行该操作
+```
+
+文件：
+
+```text
+infrastructure/security/JsonServerAuthenticationEntryPoint.java
+infrastructure/security/JsonServerAccessDeniedHandler.java
+infrastructure/security/SecurityErrorResponseWriter.java
+```
+
+EntryPoint 处理未认证或 Token 校验失败；DeniedHandler 处理已认证但无权访问。它们实现响应式接口，委托 Writer 通过 ObjectMapper 序列化 UTF-8 JSON，再返回 `response.writeWith(...)` 的 `Mono<Void>`。没有 Servlet OutputStream，也没有自行 `subscribe()`；由框架订阅并管理响应生命周期。
+
+安全错误发生在过滤链阶段，不能只依赖 ControllerAdvice。配置时需要在 `exceptionHandling` 与 `oauth2ResourceServer` 两处接入相同处理器：一处覆盖访问规则导致的拒绝，另一处覆盖 Bearer 认证过程失败。只配一处可能出现响应格式不一致。
+
+Writer 仅生成网关自己的安全错误，不改写下游错误。例如下游 429 的 `LOGIN_RATE_LIMITED` 与 `Retry-After`、密码错误或 Session 无效响应应继续透传。
+
+### 开发排错：动态覆盖路由 URI 为什么使测试启动失败
+
+本轮最初在 `@DynamicPropertySource` 只覆盖：
+
+```text
+spring.cloud.gateway.server.webflux.routes[0].uri
+```
+
+结果 GatewayProperties 绑定失败。原因是配置源之间的 List 不会像普通字段一样逐项合并：高优先级配置提供了 routes 列表后，原 YAML 的该列表被替换，只剩 URI，缺少路由其他必需字段。
+
+修复为覆盖现有 YAML 引用的标量占位符：
+
+```java
+registry.add("AUTH_SERVICE_URI",
+        () -> "http://127.0.0.1:" + DOWNSTREAM.port());
+```
+
+这样保留真实路由定义，只改变下游地址。这个问题也纠正了此前导读中“只覆盖列表单字段”的测试示例，后续不要继续沿用该写法。
+
+### 自动化验证与范围
+
+`GatewaySecurityTest` 使用 Reactor Netty 随机端口模拟下游，不引入额外 MockWebServer，也不需要启动 MySQL、Redis 或真实 AuthService。测试使用真实 HMAC 签名，不是绕过 Decoder 注入认证对象。
+
+验证内容：
+
+- 缺少 Token、伪造身份 Header、格式错误、错误签名、非允许算法。
+- 过期（超过默认偏差）、未来 nbf、错误 issuer、错误/缺失 token_type、非法/缺失 sub/sid/exp。
+- 受保护请求必须认证；匿名白名单限定 POST；无效 Bearer 即使访问匿名入口也拒绝。
+- 合法请求的路径、查询参数和 Authorization 原样传递，匿名 POST 的请求体不变。
+- 下游 401 与 429/Retry-After 原样返回；被网关拒绝的请求未到达模拟下游。
+- 未知入口：无 Token 为 401，有合法 Token 为 403。原先“未知路径必为 404”的测试因此调整，而不是扩大白名单迎合旧测试。
+- 正常请求不生成登录 Cookie，不依赖服务器保存认证状态。
+
+执行：
+
+```bash
+./mvnw -pl nexus-api-gateway -am clean verify
+```
+
+结果：Gateway 27 个测试通过（原启动测试 2 个，安全与路由测试 25 个），无失败/错误。依赖检查未发现 MVC、Tomcat Core、JDBC、MySQL、MyBatis 或 Redis；`tomcat-embed-el` 来自校验库，不是 Servlet 服务器。
+
+另外执行全仓回归，为已有 Auth 测试显式提供非生产 Redis/HMAC 配置，并移除外部 JWT 密钥变量：
+
+```bash
+env -u JWT_ACCESS_TOKEN_SECRET \
+  LOGIN_HMAC_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+  REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_PASSWORD=test-only \
+  REDIS_CONNECT_TIMEOUT=1s REDIS_TIMEOUT=1s \
+  ./mvnw -q clean verify
+```
+
+结果：36 个测试通过（Auth 原有 9 个 + Gateway 27 个），MySQL 集成测试使用 Testcontainers。提供 Redis 变量仅解决旧测试配置绑定，不等于完成 Redis 行为测试，也不等于补齐认证专项测试。网关自身测试无需这些外部变量。
+
+### GW-03 阶段结束时的状态与深入边界（后续实现见 GW-04/05）
+
+GW-01～03 保持 VERIFY；自动化已有证据，仍待作者对新的双层认证链路人工联调。特别要验证：真实登录获得 Token 后经网关查询会话；退出撤销后，同一尚未过期 JWT 经网关仍会被 AuthService 拒绝。模拟下游不能证明数据库中的 Session 撤销正确。
+
+GW-04/GW-05 尚未完成：下游目前继续独立校验 JWT/Session；“伪造身份 Header 不能代替 Token”的测试，不等同于已完成身份 Header 清洗、服务间认证、对象级越权和直连绕过完整验证。
+
+真实 IP/可信代理也未完成。经网关后 AuthService 的 `getRemoteAddr()` 通常看到网关 IP，不能直接信任任意客户端 X-Forwarded-For。后续先解释可选方案与安全代价，再由作者决定深入范围。
+
+其他待讨论事项：非对称签名与密钥轮换、跨域策略、错误路径/端点白名单扩展、DNS 原生库兼容问题。当前不启用跨域全放行，也不宣称已达到最终生产部署安全要求。
+
+## GW-04/GW-05：单层代理、可信来源与会话授权验证
+
+### 为什么现在做，而不是继续叠加技术
+
+本轮先明确“做到哪里”：不实现 mTLS、服务网格、多级代理或非对称签名；先解决已经出现的网关来源 IP 与现有登录限流之间的冲突，并证明网关认证不代替下游授权。
+
+对照 InfiniteChat：其网关验证 Token 后，部分下游 Controller 仍接收路径中的操作者 userId。网关证明请求携带了有效凭据，不等于证明路径 userId 就是该账号。NexusAI 继续使用 JWT sub/sid 与 Session 判断账号，不新增一个可以被客户端自报的身份 Header 来替代认证。
+
+另一方面，Auth 原来直接使用 `getRemoteAddr()`，经 Gateway 后通常只看到 Gateway 地址。若简单换成 X-Forwarded-For，会把客户端自报 IP 当作事实，允许伪造限流来源。因此“账号身份”和“来源 IP”必须分别建立依据。
+
+### 实际链路与文件导读
+
+```text
+客户端发送 JWT、可能伪造的身份/代理 Header
+  ↓
+Gateway：保留原始 TCP 对端；JWT 安全链认证/授权
+  ↓
+TrustedClientHeadersFilter：清理不可信 Header
+  ↓
+设置唯一 X-Nexus-Client-IP = Gateway 的连接对端 IP
+  ↓ 原样保留 Authorization
+AuthService：再次校验 JWT/Session
+  ↓
+登录入口 ClientIpResolver：判断连接是否来自配置的可信代理
+  ├─ 非可信或缺失/非法 Header → 使用连接对端 IP
+  └─ 可信且只有一个合法 IP 字面量 → 使用该客户端 IP
+  ↓
+LoginWithPasswordCommand.clientIp → LoginAttemptLimiter
+```
+
+网关文件：`infrastructure/security/TrustedClientHeadersFilter.java`。使用的是出站 `HttpHeadersFilter`，不是 Servlet Filter，也不是自己解析 JWT 的 GlobalFilter。这样可直接规范最终发送给下游的 Header。它只参与请求头处理，不改写下游响应。
+
+处理规则：删除 Forwarded、所有 X-Forwarded-*、X-Real-IP、客户端 X-Nexus-*，以及约定的 X-User-Id、X-Account-Id、X-Session-Id、X-Authenticated-User/Id、X-Auth-Request-User/Email；随后按 TCP 对端生成一个 X-Nexus-Client-IP。按名字判断不区分大小写；删除的是约定契约，不声称能自动识别未来所有自定义身份头，新增服务也不能随意信任其他 Header。
+
+过滤器位于出站请求头链末尾，避免此前的头处理留下伪造值。没有生成 userId 身份 Header；JWT 继续由下游独立校验。
+
+Auth 文件：
+
+```text
+infrastructure/security/proxy/TrustedProxyProperties.java
+infrastructure/security/proxy/IpLiteral.java
+infrastructure/security/proxy/ClientIpResolver.java
+authentication/interfaces/rest/AuthController.java
+```
+
+`TrustedProxyProperties` 使用现有 ConfigurationPropertiesScan，默认列表为空。只接受精确 IP，错误配置（主机名、CIDR、端口等）尽早失败，不偷偷扩大信任范围。比较的是解析后的地址，避免 IPv6 同一地址的不同文本表示匹配失败。
+
+`ClientIpResolver` 只读取约定的 X-Nexus-Client-IP，不解析多跳 X-Forwarded-For。Header 必须恰好一个值，且是无端口、无 zone、无方括号、无首尾空白的 IPv4/IPv6 字面量；重复、逗号链、非法值、缺失值统一回退到连接对端 IP。回退不会放行认证，只是保守地把请求归入代理/对端限流桶。
+
+`IpLiteral` 对 IPv4 按四段数字解析，对 IPv6 先限定字符集与冒号格式，再使用 JDK 的字面量解析；不接受主机名，不执行 DNS 查询。IPv6 规范化后可作为稳定的限流输入；不把 IPv6 地址前缀聚合视为本轮已实现能力。
+
+Controller 只在构造登录 Command 时调用 Resolver，不把 HTTP 请求传入应用服务。来源 IP 不参与决定 accountId，认证/对象授权仍来自 JWT/Session。
+
+### 为什么不能只写一个 Header 过滤器
+
+框架可能在业务过滤器之前按 Forwarded/X-Forwarded 解释请求，改写 remoteAddress。若先信了伪造 IP，后面再用这个“改写后的对端”生成自定义 Header，清理动作也无济于事。
+
+因此两端都显式配置：
+
+```yaml
+server:
+  forward-headers-strategy: none
+```
+
+并核对当前 Gateway 4.3.5 配置元数据，关闭默认生成/追加代理头：
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          forwarded:
+            enabled: false
+          x-forwarded:
+            enabled: false
+```
+
+新网关测试同时提供伪造的 Forwarded host/proto 与 X-Forwarded-Prefix，检查真实下游收到的路径仍为 `/api/auth/sessions`，来源仍为连接对端，且没有自动重新生成的转发头。Auth 的真实 HTTP 测试也检查自动转发解释没有先改写来源判断。
+
+### 配置与本地限制
+
+`.env.example` 新增空的 `AUTH_TRUSTED_PROXY_ADDRESSES`。不配置时不信任任何代理；本地单层 Gateway 使用 127.0.0.1 连接 Auth 时，可在 Auth 进程显式设置：
+
+```text
+AUTH_TRUSTED_PROXY_ADDRESSES=127.0.0.1
+```
+
+关键限制：配置只识别来源地址，不证明进程身份。其他本机进程也能从回环地址连接，所以这种本地配置不能防止其他本机进程伪造来源 IP。账号认证仍有 JWT/Session 保护，但 IP 限流不能因此被描述为绝对不可绕过。生产需要限制下游可达性，必要时加入服务间认证；本轮不把这些尚未落地的设施写成已完成。
+
+Gateway 当前直接面向客户端，不接受前置代理链。如果以后加 Nginx/LB，应重新设计和测试每跳信任，不能直接把本轮 Header 算法当作多级代理方案。
+
+### 新增测试与证据范围
+
+1. `GatewaySecurityTest` 增加一个真实网关→模拟下游用例：客户端同时伪造身份头、Forwarded、X-Forwarded-*、X-Real-IP 和重复 X-Nexus-Client-IP。检查下游只收到重写后的一个来源 IP，所有约定身份/代理头被清理，Authorization 保留。
+2. `ClientIpResolverTest` 共 27 个用例：默认不信任、非可信来源忽略所有转发头、可信单 IP、IPv6 规范化、重复头、缺失头、逗号链/端口/主机名/空白/非法 IP，以及错误可信代理配置。
+3. `SessionSecurityIntegrationTest` 共 4 个用例：真实 Tomcat/HTTP、Testcontainers MySQL、真实密码登录/JWT/Session/事务。
+   - 直连 Auth 不能用身份/来源 Header 代替 Bearer。
+   - 当前退出后，JWT 签名仍合法且未过期，但数据库 Session 已 REVOKED，原 Access Token 被拒绝。
+   - A 带自己的 Token 与伪造的 B 身份头撤销 B，返回 404/SESSION_NOT_FOUND，B 仍 ACTIVE 且可访问；A 可以撤销自己，B 不受影响。
+   - 配置可信回环代理后，合法自定义来源进入登录限流上下文，普通伪造 Forwarded/X-Forwarded-For 不改写判断。
+4. `UntrustedProxyIntegrationTest` 增加 1 个真实 HTTP/MySQL 用例：默认空信任列表下，即使直连客户端伪造所有来源头，传给登录限流的仍是实际连接对端 127.0.0.1。
+
+Auth HTTP 测试只替换 `LoginAttemptLimiter` 端口以隔离 Redis；JWT、Session Repository、事务、密码哈希与数据库都没有替换。捕获限流端口参数证明的是“解析结果传入正确”，不是“Redis 计数、Lua、TTL 全部正确”。这两类证据不能混写。
+
+### 回归与遗留事项
+
+补齐 Auth `src/test/resources/application.properties` 中专用 Redis/HMAC 与空代理列表，测试不再依赖开发者环境变量。生产资源仍没有硬编码可用密钥。
+
+执行：
+
+```bash
+env -u JWT_ACCESS_TOKEN_SECRET -u LOGIN_HMAC_SECRET \
+  -u REDIS_HOST -u REDIS_PORT -u REDIS_PASSWORD \
+  -u REDIS_CONNECT_TIMEOUT -u REDIS_TIMEOUT \
+  -u AUTH_TRUSTED_PROXY_ADDRESSES ./mvnw -q clean verify
+```
+
+结果：69 个测试全部通过，0 失败/错误（Auth 41、Gateway 28），`git diff --check` 通过。网关原有 macOS DNS 原生库回退告警仍然存在，本轮未宣称修复。
+
+GW-04/GW-05 保持 VERIFY：单层闭环与测试已实现，等待作者审核及真实 Gateway→真实 Auth 的本轮联合人工联调记录。当前测试分别证明两端行为，不是同时启动两服务的跨进程端到端测试。生产网络隔离、mTLS、多级代理、完整认证重放/并发测试和 Redis 行为测试继续保留待办。
 
 ## SOC-01～SOC-08：用户资料、好友和群组
 

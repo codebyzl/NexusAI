@@ -17,6 +17,7 @@ import io.github.codebyzl.nexus.auth.authentication.application.session.RevokeLo
 import io.github.codebyzl.nexus.auth.authentication.application.session.RevokeLoginSessionService;
 import io.github.codebyzl.nexus.auth.authentication.application.session.RevokeOtherSessionsQuery;
 import io.github.codebyzl.nexus.auth.authentication.application.session.RevokeOtherSessionsService;
+import io.github.codebyzl.nexus.auth.infrastructure.security.proxy.ClientIpResolver;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -44,6 +45,7 @@ import java.util.UUID;
 @Tag(name = "Authentication", description = "登录、Token 轮换和退出接口")
 public class AuthController {
 
+    private final ClientIpResolver clientIpResolver;
     private final LoginWithPasswordService loginWithPasswordService;
     private final RotateRefreshTokenService rotateRefreshTokenService;
     private final LogoutService logoutService;
@@ -67,7 +69,7 @@ public class AuthController {
                 new LoginWithPasswordCommand(
                         request.email(),
                         request.password(),
-                        httpServletRequest.getRemoteAddr()
+                        clientIpResolver.resolve(httpServletRequest)
                 );
 
         LoginWithPasswordResult result =

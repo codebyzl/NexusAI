@@ -48,13 +48,34 @@
 
 | ID | InfiniteChat 当前实现 | 常见问题 | NexusAI 改进 | 验证方式 | 状态 |
 |---|---|---|---|---|---|
-| GW-04/GW-05 | Gateway 验证 Token，但下游接口继续信任请求参数中的 `userId` | IDOR/越权：用户 A 可把参数改成用户 B | 从可信 Token/SecurityContext 获得 `actorId`；客户端 userId 只能作为被操作资源，不能代表操作者 | 用户 A/B 越权集成测试 | 待设计 |
+| GW-03 | 原 Gateway 手写认证过滤器并通过 Redis 检查 Token | 入口认证与自定义 Token 处理耦合，容易出现错误响应和规则漂移 | 使用 Reactive Resource Server；HS256、issuer、时间和必要 Claims 与 AuthService 对齐；匿名入口按 HTTP 方法及完整路径限定；本地 401/403 契约统一，下游业务错误透传 | Gateway 28 个测试通过，包含真实签名 Token、非法 Claims、匿名入口、Header 清理/透传；Auth 真实撤销测试通过，双服务联合联调待记录 | 待验证（自动化通过，待作者验收） |
+| GW-04/GW-05 | Gateway 验证 Token，但下游部分接口继续使用请求参数中的操作者 `userId` | 网关放行不等于对象级授权；伪造身份或来源头可能绕过业务约束 | 下游继续从 JWT/Session 获取身份并校验所有权；网关清理约定身份/转发头，只写连接对端 IP；下游默认不信任代理，显式精确 IP 白名单后才接受单一 IP 字面量 | 真实 HTTP/MySQL 测试：A 撤销 B 返回 404 且 B 保持可用、撤销后旧 JWT 被拒绝、默认直连忽略伪造来源头；代理解析 27 个测试 | 待验证（单层闭环测试通过，生产隔离/服务间认证另阶段完成） |
 | RT-02/RT-06 | WebSocket 认证了 Channel，但消息中的 `senderId` 未与 Channel 身份强绑定 | 已登录用户可以伪造发送者 | 服务端忽略客户端 senderId，使用 Channel 上的认证身份 | 伪造 senderId 协议测试 | 待设计 |
 | ACC-04 | 固定盐加 MD5 保存密码 | 抗暴力破解能力不足 | 通过应用层 `PasswordHasher` 端口隔离密码能力，基础设施使用 Spring Security `DelegatingPasswordEncoder`，当前默认生成带算法标识的 bcrypt 哈希并支持后续算法升级 | 注册后数据库无明文密码；密码登录接口手动验证成功；现有构建测试通过 | 已验证（密码哈希与匹配链路已落地） |
 | AUTH-02 | JWT 密钥存在源码配置；Access Token 写入 Redis | 密钥泄漏；按 userId 保存 Token 不适合多设备，也缺少明确 Session 关联 | JWT 密钥通过环境变量注入并校验 Base64/256 bit；Access Token 是包含 `sid` 的 15 分钟 JWT，Token 本身不落库；AUTH-05 起 AuthService 在受保护请求中额外检查 Session 状态 | 无外部密钥执行 `clean verify`；登录接口解析 Claims 与 TTL | 已验证（签发链路已落地，专项自动化测试待补） |
 | AUTH-03 | Refresh Token 使用 JWT 原文并按 userId 单值存入 Redis | 原文泄漏后可直接使用；新设备登录覆盖旧设备；无法独立撤销某个会话 | 每次登录创建 UUID Session；Refresh Token 使用 256 bit 随机值，数据库只保存 SHA-256；Access Token 通过 `sid` 关联会话 | 登录接口与 `auth_session` 哈希手动核对；Flyway V2 和现有测试通过 | 已验证（专项自动化测试待补） |
 | AUTH-04 | 刷新时直接覆盖 Redis 中的 Refresh Token，没有历史状态和 Token Family | 无法区分普通无效 Token 与旧 Token 重放；并发刷新缺少可靠的一次性消费约束 | 保存 Refresh Token 历史状态，轮换时标记 `USED` 并创建后继 Token；重用旧 Token 时撤销整个 Session；事务内按 Session→Token 顺序使用行锁串行化消费 | 正常轮换、旧 Token 重放、双请求并发刷新和跨 Session 隔离测试 | 待验证（生产链路已实现，专项自动化测试待补） |
-| AUTH-05 | 缺少清晰的当前会话退出、指定设备撤销和多设备会话语义 | 只删除客户端 Token 无法阻止 Refresh Token 继续换取新凭据；按 userId 全量覆盖又会误伤其他设备；信任客户端提交的 accountId/sessionId 会产生 IDOR | 当前退出使用 Refresh Token 定位独立 Session；多设备接口通过验证后的 JWT `sub/sid` 获取可信身份；支持会话列表、指定 Session 撤销、退出其他设备和退出全部设备；事务内统一先锁 Session，再撤销对应 Refresh Token Family；AuthService 在受保护请求中检查 Session 状态，使已撤销 Session 的 Access Token 被立即拒绝 | 当前退出、会话列表、指定/其他/全部 Session 撤销和 Access Token 拒绝场景已人工验证；后续补重放、并发和跨 Session 隔离自动化测试 | 待验证（生产链路和人工验证完成，专项自动化测试待补） |
+| AUTH-05 | 缺少清晰的当前会话退出、指定设备撤销和多设备会话语义 | 只删除客户端 Token 无法阻止 Refresh Token 继续换取新凭据；按 userId 全量覆盖又会误伤其他设备；信任客户端提交的 accountId/sessionId 会产生 IDOR | 当前退出使用 Refresh Token 定位独立 Session；多设备接口通过验证后的 JWT `sub/sid` 获取可信身份；支持会话列表、指定 Session 撤销、退出其他设备和退出全部设备；事务内统一先锁 Session，再撤销对应 Refresh Token Family；AuthService 在受保护请求中检查 Session 状态，使已撤销 Session 的 Access Token 被立即拒绝 | 当前退出、会话列表、指定/其他/全部 Session 撤销和 Access Token 拒绝场景已人工验证；本轮补真实 HTTP/MySQL 的当前退出、指定撤销和跨账号隔离测试，重放/并发/批量撤销待补 | 待验证（部分专项自动化通过，其余边界待补） |
+
+### GW-01～GW-03 阶段实现边界（当时证据，后续进展见下一节）
+
+- Gateway 是独立 WebFlux/Netty 模块，不依赖 AuthService、MVC、JDBC、MySQL 或 Redis；父工程仅导入兼容 Boot 3.5 的 Cloud 2025.0.3 BOM。
+- 固定 URI 路由保留 `/api` 前缀；仅匹配 `/api/accounts` 和 `/api/auth/**`，不笼统代理全部 `/api/**`。
+- `GatewayJwtConfig` 只创建 ReactiveJwtDecoder，不配置签发器；现阶段共享 HMAC 密钥意味着网关在密码学上仍具备签名能力，不能声称具备非对称签名的信任隔离。
+- 安全处理使用响应式错误处理器和 Buffer 写入，不使用 Servlet OutputStream，不依赖 ControllerAdvice 捕获过滤链错误；关闭表单、Basic、框架 logout 和认证状态持久化。
+- 测试使用 Reactor Netty 随机端口下游，无新增 MockWebServer 依赖。验证被拒绝请求未到下游，合法请求保留 Authorization；这不等于 Header 清洗或服务间身份认证已经完成。
+- 未匹配入口现由安全链优先拒绝：匿名 401，已认证 403，不再以“总是 404”为验收规则。
+- 全仓 36 个测试通过（为 Auth 旧测试显式提供 Redis/HMAC 测试变量）；未补齐 Auth 专项安全测试，未实际联调新的网关与真实 Session 撤销。macOS DNS 原生库回退告警仍保留待办。
+
+### GW-04/GW-05：单层代理与身份边界实现证据
+
+- Gateway 的 `TrustedClientHeadersFilter` 是出站 `HttpHeadersFilter`，位于请求头过滤链末尾；按约定清理身份头、Forwarded、X-Forwarded-*、X-Real-IP 和 X-Nexus-*，再用真实连接对端写唯一 `X-Nexus-Client-IP`，不触碰 Authorization。
+- 两端设置 `server.forward-headers-strategy=none`；网关关闭默认 Forwarded/X-Forwarded 生成，避免在自定义清理前改写 remoteAddress 或在清理后重新追加不可信信息。
+- Auth 的 `ClientIpResolver` 默认不信任代理；精确代理 IP 显式配置后才接受单个合法 IPv4/IPv6 字面量，不执行主机名 DNS、不接受重复/逗号链/端口/zone，异常回退到连接对端。
+- 信任列表空值不等于信任所有；配置 CIDR、主机名或非法 IP 会启动失败。回环信任只用于本地开发，无法区分其他本机进程；未完成生产网络隔离、mTLS 或多级代理。
+- 新增解析单元测试 27 个、真实 Auth HTTP/MySQL 测试 5 个、Gateway 清理头测试 1 个。仅在 Auth HTTP 测试中替换 LoginAttemptLimiter；Session、JWT、事务与数据库均真实，不能据此宣称 Redis 算法已验证。
+- 全仓移除外部 JWT、Redis、HMAC 与代理环境变量后 `clean verify` 通过：69 个测试、0 失败/错误。Auth 测试资源补齐专用 Redis/HMAC 默认配置，不再依赖开发者 .env；测试密钥未进入生产 JAR。
+- 仍待作者验收与真实 Gateway→真实 Auth 的联合联调记录，故保持 VERIFY；macOS DNS 原生库告警和其他认证专项测试仍是待办。
 
 ### AUTH-06 登录限流实现证据
 

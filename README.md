@@ -84,6 +84,8 @@ NexusAI 以 Java 微服务和事件驱动架构为基础，围绕用户关系、
 
 ## 目标架构
 
+以下为最终目标，并非首版一次性引入全部组件。开发按 `docs/development-roadmap.md` 的闭环演进顺序推进：认证入口 → 单节点私聊与断线补拉 → Outbox/Kafka 可靠性升级 → ACK、多设备与多节点 → 社交、文件、AI/RAG 和前端完整交付。各阶段保留清晰限制、安全约束和验证证据。
+
 ```mermaid
 flowchart LR
     WEB[React Web] -->|HTTP / SSE| GW[API Gateway]
@@ -123,7 +125,7 @@ flowchart LR
 |---|---|---|
 | `nexus-common-kernel` | 极少量稳定公共类型，不包含业务 Entity 和基础设施实现 | 已创建 |
 | `nexus-auth-service` | 账号、凭据、登录会话、Token 和验证码 | 实现中 |
-| `nexus-api-gateway` | HTTP 路由、认证入口、限流和安全边界 | 规划中 |
+| `nexus-api-gateway` | HTTP 路由、认证入口、限流和安全边界 | 已实现 Auth 路由、JWT 入口认证和单层代理 Header 清理；生产部署隔离待补 |
 | `nexus-social-service` | 用户资料、好友、群组和会话成员 | 规划中 |
 | `nexus-message-service` | 消息顺序、幂等、存储、历史、读游标和 Outbox | 规划中 |
 | `nexus-realtime-gateway` | Netty WebSocket、Presence、协议和在线投递 | 规划中 |
@@ -240,6 +242,42 @@ NexusAI/
 ```
 
 当前 Common 应保持纯 Java JAR，不应出现 Spring Web、MySQL、Redis、Nacos 或 AI 相关依赖。
+
+## Gateway 本地启动
+
+Gateway 默认监听 `127.0.0.1:8080`，AuthService 默认位于 `127.0.0.1:8081`。在启动进程环境中注入与 AuthService 相同的 `JWT_ACCESS_TOKEN_SECRET`（Base64、至少 256 bit），issuer 默认 `nexus-auth-service`；网关不需要数据库或 Redis。
+
+```bash
+./mvnw -pl nexus-api-gateway spring-boot:run
+```
+
+可用 `AUTH_SERVICE_URI` 覆盖下游地址、`GATEWAY_PORT` 覆盖网关端口。项目根目录 `.env` 不代表 Maven/Java 进程会自动加载这些变量，请通过 IDE 或 shell 显式注入，勿提交实际密钥。
+
+- 匿名 POST：`/api/accounts`、`/api/auth/login`、`/api/auth/token/refresh`、`/api/auth/logout`。
+- 健康探测：GET `/actuator/health` 及子路径。
+- 其他 `/api/auth/**`：要求 Bearer Access Token；未知入口默认拒绝。
+- 原样转发路径和 Authorization，不使用 StripPrefix。下游继续验证 JWT、Session 和资源所有权。
+- 当前为共享 HMAC 密钥、双层验证方案；已实现单层代理来源 IP，服务间认证、网络隔离及多级代理尚未实现，不能直接部署为最终生产安全架构。
+
+### 单层代理与来源 IP
+
+Gateway 在出站请求头过滤链末尾清理 `Forwarded`、`X-Forwarded-*`、`X-Real-IP`、约定身份 Header 和客户端 `X-Nexus-*`，根据真实连接对端重新设置唯一的 `X-Nexus-Client-IP`；不传递用户身份 Header 来代替 JWT。两服务均显式使用 `server.forward-headers-strategy=none`，避免框架先按客户端转发头改写连接对端；网关默认的 Forwarded/X-Forwarded 生成也已关闭。
+
+AuthService 默认不信任任何代理，只在连接对端属于 `AUTH_TRUSTED_PROXY_ADDRESSES` 的精确 IP 列表时读取该自定义头；只接受一个 IPv4/IPv6 字面量。重复、空白、逗号链、主机名、端口或非法值均回退到连接对端 IP；普通 X-Forwarded-For 始终不作为来源依据。
+
+本地单层开发时，可在 **AuthService 进程**显式设置：
+
+```text
+AUTH_TRUSTED_PROXY_ADDRESSES=127.0.0.1
+```
+
+不设置时，经网关访问的 IP 限流仍按网关对端地址计数。配置不接受 CIDR、主机名或通配符。信任 `127.0.0.1` 同时信任所有能从该地址连接的本机进程，不是 Gateway 身份证明；生产必须结合可达性限制/网络隔离，必要时使用服务间认证。当前 Gateway 直接面向客户端，不支持未经设计就放在另一层代理之后。
+
+Gateway 自身测试无需 MySQL、Redis 或真实 AuthService：
+
+```bash
+./mvnw -pl nexus-api-gateway -am clean verify
+```
 
 ## AuthService API 文档
 
